@@ -97,8 +97,12 @@ def main() -> None:
     port = int(os.environ.get("PORT", "10000"))
 
     if external_url:
-        updater.start_webhook(listen="0.0.0.0", port=port, url_path=token)
-        updater.bot.set_webhook(url=f"{external_url}/{token}")
+        updater.start_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=token,
+            webhook_url=f"{external_url}/{token}",
+        )
         logger.info("Бот запущен через вебхук: %s", external_url)
     else:
         updater.start_polling()
