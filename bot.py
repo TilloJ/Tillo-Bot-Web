@@ -158,6 +158,34 @@ TEXT_STATS_CAPACITY_WARN = (
     "⚠️ Список заполнен на {percent}% — осталось примерно {left}!"
 )
 
+# ---------------------------------------------------------------------------
+# Очистка списка от прошедших вебинаров (/cleanup)
+# ---------------------------------------------------------------------------
+
+TEXT_CLEANUP_NOTHING = "Чистить нечего: записей на прошедшие вебинары нет."
+
+TEXT_CLEANUP_PREVIEW = (
+    "🧹 Можно освободить место, убрав записи на прошедшие вебинары:\n\n"
+    "{items}\n\n"
+    "Всего {removed}. Список станет заполнен на {after}% вместо {before}%.\n\n"
+    "⚠️ Эти люди больше не получат рассылку через /broadcast. "
+    "Кто и на что записывался, останется видно в сообщениях группы выше."
+)
+
+TEXT_CLEANUP_BTN_YES = "Удалить"
+TEXT_CLEANUP_BTN_NO = "Отмена"
+
+TEXT_CLEANUP_DONE = (
+    "🧹 Готово, убрано {removed}.\n"
+    "Список заполнен на {after}% вместо {before}%."
+)
+
+TEXT_CLEANUP_CANCELLED = "Отменено, ничего не удалено."
+
+TEXT_CLEANUP_FAILED = (
+    "Не получилось сохранить изменения — список остался как был."
+)
+
 TEXT_GROUP_REMINDER_SENT = (
     "🔔 Отправлено напоминание про вебинар {date}.\n"
     "Доставлено: {sent}, не доставлено: {failed}."
@@ -286,6 +314,33 @@ def capacity_left() -> int:
     """Сколько ещё регистраций примерно поместится."""
     free = REGISTRY_LIMIT - len(registry_text())
     return max(0, free // CHARS_PER_REGISTRATION)
+
+
+def past_registration_dates(today: datetime.date = None):
+    """Даты в списке, которые уже прошли: [(дата, сколько записей)]."""
+    if today is None:
+        today = today_local()
+    found = []
+    for date_str, ids in registrations.items():
+        if not ids:
+            continue
+        d = parse_date(date_str)
+        if d and d < today:
+            found.append((d, date_str, len(ids)))
+    found.sort(key=lambda item: item[0])
+    return [(date_str, count) for _, date_str, count in found]
+
+
+def cleanup_frees(past) -> int:
+    """Сколько символов освободит удаление этих дат (без изменения списка)."""
+    freed = 0
+    for date_str, _ in past:
+        ids = registrations.get(date_str, set())
+        line = f"{date_str}:" + ",".join(str(i) for i in sorted(ids))
+        freed += len(line) + 1                # +1 за перевод строки
+        if date_str in reminded_dates:
+            freed += len(date_str) + 1        # дата в строке SENT: плюс запятая
+    return freed
 
 
 def plural_ru(number: int, one: str, few: str, many: str) -> str:
@@ -674,6 +729,84 @@ def stats_command(update: Update, context: CallbackContext) -> None:
     update.message.reply_text(text)
 
 
+def records_phrase(count: int) -> str:
+    """'12 записей' — в нужном падеже."""
+    return f"{count} " + plural_ru(count, "запись", "записи", "записей")
+
+
+def cleanup_command(update: Update, context: CallbackContext) -> None:
+    """/cleanup — показать, сколько места занимают прошедшие вебинары."""
+    if not is_admin_chat(update):
+        return
+
+    past = past_registration_dates()
+    if not past:
+        update.message.reply_text(TEXT_CLEANUP_NOTHING)
+        return
+
+    items = "\n".join(f"• {date_str} — {records_phrase(count)}"
+                      for date_str, count in past)
+    before = capacity_percent()
+    after = max(0, round((len(registry_text()) - cleanup_frees(past)) * 100
+                         / REGISTRY_LIMIT))
+    keyboard = [[
+        InlineKeyboardButton(TEXT_CLEANUP_BTN_YES, callback_data="cleanup:yes"),
+        InlineKeyboardButton(TEXT_CLEANUP_BTN_NO, callback_data="cleanup:no"),
+    ]]
+    update.message.reply_text(
+        TEXT_CLEANUP_PREVIEW.format(
+            items=items,
+            removed=records_phrase(sum(c for _, c in past)),
+            before=before, after=after,
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def cleanup_callback(update: Update, context: CallbackContext) -> None:
+    """Кнопки под /cleanup. Работают только внутри рабочей группы."""
+    query = update.callback_query
+    query.answer()
+
+    if not (ADMIN_CHAT_ID and query.message
+            and query.message.chat.id == ADMIN_CHAT_ID):
+        return
+
+    if query.data == "cleanup:no":
+        query.edit_message_text(TEXT_CLEANUP_CANCELLED)
+        return
+
+    # Пересчитываем на момент нажатия: между показом и нажатием мог
+    # смениться день.
+    past = past_registration_dates()
+    if not past:
+        query.edit_message_text(TEXT_CLEANUP_NOTHING)
+        return
+
+    before = capacity_percent()
+    removed = sum(count for _, count in past)
+    backup = {d: set(registrations[d]) for d, _ in past if d in registrations}
+    backup_sent = set(reminded_dates)
+
+    for date_str, _ in past:
+        registrations.pop(date_str, None)
+        reminded_dates.discard(date_str)
+
+    if not save_registry(context.bot):
+        registrations.update(backup)
+        reminded_dates.clear()
+        reminded_dates.update(backup_sent)
+        query.edit_message_text(TEXT_CLEANUP_FAILED)
+        return
+
+    logger.info("Очистка: убрано %s записей за %s прошедших вебинаров",
+                removed, len(past))
+    query.edit_message_text(TEXT_CLEANUP_DONE.format(
+        removed=records_phrase(removed),
+        before=before, after=capacity_percent(),
+    ))
+
+
 def broadcast_command(update: Update, context: CallbackContext) -> None:
     """/broadcast текст — разослать сообщение всем вручную."""
     if not is_admin_chat(update):
@@ -754,7 +887,11 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler('stats', stats_command))
     dispatcher.add_handler(CommandHandler('broadcast', broadcast_command))
     dispatcher.add_handler(CommandHandler('check', check_command))
+    dispatcher.add_handler(CommandHandler('cleanup', cleanup_command))
     dispatcher.add_handler(CallbackQueryHandler(register_callback, pattern=r'^reg:'))
+    dispatcher.add_handler(
+        CallbackQueryHandler(cleanup_callback, pattern=r'^cleanup:')
+    )
     dispatcher.add_handler(
         MessageHandler(Filters.text & ~Filters.command, handle_message)
     )
