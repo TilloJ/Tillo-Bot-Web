@@ -1,20 +1,22 @@
 import datetime
 import logging
 import os
+import re
 import time
 
 import pytz
 import tornado.web
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Updater,
     CommandHandler,
+    CallbackQueryHandler,
     MessageHandler,
     Filters,
     CallbackContext,
 )
 from telegram.ext.utils import webhookhandler as _webhookhandler
-from telegram.error import TelegramError
+from telegram.error import TelegramError, Unauthorized, BadRequest
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -28,7 +30,8 @@ ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "0"))
 # ============================================================================
 # РАСПИСАНИЕ ВЕБИНАРОВ
 # Добавляйте и меняйте строки здесь. Дата строго в формате ДД.ММ.ГГГГ.
-# За день до каждой даты бот сам разошлёт напоминание всем, кто записался.
+# За день до каждой даты бот сам разошлёт напоминание тем, кто записался
+# именно на этот вебинар.
 # ============================================================================
 
 WEBINARS = [
@@ -52,8 +55,11 @@ WEBINARS = [
     },
 ]
 
-# Часовой пояс и время, в которое уходит напоминание накануне вебинара
-TIMEZONE = pytz.timezone("Europe/Moscow")
+# Часовой пояс и время, в которое уходит напоминание накануне вебинара.
+# Пояс должен совпадать с поясом заданий на cron-job.org, которые будят сервис
+# перед этим временем — иначе сервис проснётся уже после отправки.
+TIMEZONE = pytz.timezone("Europe/Prague")
+TIMEZONE_LABEL = "Прага"
 REMINDER_HOUR = 12
 REMINDER_MINUTE = 0
 
@@ -72,11 +78,35 @@ TEXT_START = (
     "/help — помощь"
 )
 
-TEXT_REGISTER = "Напишите ваше имя — я зарегистрирую вас на вебинар."
+# Показывается вместе с кнопками выбора вебинара
+TEXT_REGISTER_PICK = "На какой вебинар вас записать?"
 
+# {date}, {time} и {title} подставляются автоматически
 TEXT_REGISTER_DONE = (
-    "Готово, вы зарегистрированы! За день до вебинара пришлю напоминание."
+    "Готово! Записали вас на <b>{date}</b> в {time}\n\n"
+    "<b>{title}</b>\n\n"
+    "За день до вебинара пришлю напоминание."
 )
+
+TEXT_REGISTER_ALREADY = "Вы уже записаны на этот вебинар 🙂"
+
+TEXT_REGISTER_GONE = (
+    "Этот вебинар уже прошёл. Нажмите /register ещё раз, чтобы выбрать другой."
+)
+
+TEXT_REGISTER_FAILED = (
+    "Не получилось вас записать. Попробуйте ещё раз чуть позже или напишите "
+    "@AppolaAppola"
+)
+
+TEXT_NO_WEBINARS = (
+    "Пока новых вебинаров не запланировано. Загляните чуть позже!"
+)
+
+# Заголовки в списке /courses
+TEXT_COURSES_TITLE = "<b>Курсы и вебинары Tillo</b>"
+TEXT_COURSES_UPCOMING = "<b>Ближайшие</b>"
+TEXT_COURSES_PAST = "<b>Уже прошли</b>"
 
 TEXT_QUESTIONS = "Напишите ваш вопрос — я передам его спикеру."
 
@@ -98,38 +128,126 @@ TEXT_REMINDER = (
     "Ждём вас 🙂"
 )
 
+# ---------------------------------------------------------------------------
+# Сообщения, которые бот пишет в рабочую группу (их видите только вы)
+# ---------------------------------------------------------------------------
+
+TEXT_GROUP_REGISTRATION = (
+    "✅ Регистрация на {date}\n"
+    "{name} (@{username})"
+)
+
+TEXT_GROUP_QUESTION = (
+    "❓ Вопрос спикеру: {question}\n"
+    "От: @{username} ({name})"
+)
+
+TEXT_GROUP_REMINDER_SENT = (
+    "🔔 Отправлено напоминание про вебинар {date}.\n"
+    "Доставлено: {sent}, не доставлено: {failed}."
+)
+
 
 def courses_text() -> str:
-    """Собирает список курсов из расписания выше, чтобы не дублировать вручную."""
-    lines = ["<b>Курсы и вебинары Tillo</b>", ""]
-    for i, w in enumerate(WEBINARS, start=1):
-        lines.append(f"{i}. <b>{w['date']}</b> в {w['time']} — {w['title']}")
+    """Собирает список курсов из расписания выше, чтобы не дублировать вручную.
+
+    Прошедшие вебинары показываем отдельным разделом: иначе /courses предлагал
+    бы то, на что /register уже не даёт записаться.
+    """
+    today = today_local()
+    upcoming, past = [], []
+    for w in WEBINARS:
+        d = parse_date(w["date"])
+        if d and d < today:
+            past.append((d, w))
+        else:
+            upcoming.append((d or datetime.date.max, w))
+    upcoming.sort(key=lambda pair: pair[0])
+    past.sort(key=lambda pair: pair[0], reverse=True)
+
+    lines = [TEXT_COURSES_TITLE, ""]
+    if upcoming:
+        lines.append(TEXT_COURSES_UPCOMING)
+        for i, (_, w) in enumerate(upcoming, start=1):
+            lines.append(f"{i}. <b>{w['date']}</b> в {w['time']} — {w['title']}")
         lines.append("")
+    if past:
+        lines.append(TEXT_COURSES_PAST)
+        for _, w in past:
+            lines.append(f"• <b>{w['date']}</b> — {w['title']}")
+        lines.append("")
+    if not upcoming and not past:
+        lines.append(TEXT_NO_WEBINARS)
     return "\n".join(lines).strip()
+
+
+def parse_date(value: str):
+    """'30.09.2026' -> date. Возвращает None, если формат неверный."""
+    try:
+        return datetime.datetime.strptime(value, "%d.%m.%Y").date()
+    except ValueError:
+        logger.error("Неверный формат даты в расписании: %s", value)
+        return None
+
+
+def today_local() -> datetime.date:
+    return datetime.datetime.now(TIMEZONE).date()
+
+
+def upcoming_webinars(today: datetime.date = None):
+    """Вебинары, которые ещё не прошли, по возрастанию даты."""
+    if today is None:
+        today = today_local()
+    found = []
+    for w in WEBINARS:
+        d = parse_date(w["date"])
+        if d and d >= today:
+            found.append((d, w))
+    found.sort(key=lambda pair: pair[0])
+    return [w for _, w in found]
+
+
+def find_webinar(date_str: str):
+    for w in WEBINARS:
+        if w["date"] == date_str:
+            return w
+    return None
 
 
 # ============================================================================
 # ХРАНИЛИЩЕ ПОДПИСЧИКОВ
 # Бесплатный Render стирает память при перезапуске, поэтому список тех, кто
 # записался, хранится в закреплённом сообщении внутри рабочей группы.
+# Формат: по строке на каждый вебинар — "ДД.ММ.ГГГГ:id,id,id".
 # ============================================================================
 
 REGISTRY_HEADER = "📋 СПИСОК ЗАРЕГИСТРИРОВАННЫХ (не удалять, не редактировать)"
 
-subscribers = set()
+# дата вебинара -> множество id тех, кто на него записался
+registrations = {}
 reminded_dates = set()   # по каким вебинарам напоминание уже уходило
 registry_message_id = None
 
+_DATE_LINE = re.compile(r"^(\d{2}\.\d{2}\.\d{4}):(.*)$")
+
+
+def all_subscribers() -> set:
+    """Все, кто записан хоть на один вебинар (без повторов)."""
+    everyone = set()
+    for ids in registrations.values():
+        everyone |= ids
+    return everyone
+
 
 def registry_text() -> str:
-    ids = ",".join(str(i) for i in sorted(subscribers))
-    sent = ",".join(sorted(reminded_dates))
-    return (
-        f"{REGISTRY_HEADER}\n"
-        f"Всего: {len(subscribers)}\n"
-        f"{ids}\n"
-        f"SENT:{sent}"
-    )
+    lines = [REGISTRY_HEADER, f"Всего: {len(all_subscribers())}"]
+    for date_str in sorted(registrations,
+                           key=lambda d: parse_date(d) or datetime.date.max):
+        ids = registrations[date_str]
+        if ids:
+            lines.append(f"{date_str}:" + ",".join(str(i) for i in sorted(ids)))
+    lines.append("SENT:" + ",".join(sorted(reminded_dates)))
+    return "\n".join(lines)
 
 
 def load_registry(bot) -> None:
@@ -137,41 +255,64 @@ def load_registry(bot) -> None:
     global registry_message_id
 
     if not ADMIN_CHAT_ID:
-        logger.warning("ADMIN_CHAT_ID не задан — регистрации сохраняться не будут")
+        logger.error(
+            "ADMIN_CHAT_ID не задан! Регистрации НЕ сохраняются, уведомления "
+            "в группу НЕ приходят, служебные команды отключены."
+        )
         return
 
     try:
         chat = bot.get_chat(ADMIN_CHAT_ID)
         pinned = chat.pinned_message
-        if pinned and pinned.text and pinned.text.startswith(REGISTRY_HEADER):
-            registry_message_id = pinned.message_id
-            lines = pinned.text.split("\n")
-            if len(lines) >= 3 and lines[2].strip():
-                for part in lines[2].split(","):
-                    part = part.strip()
-                    if part.isdigit():
-                        subscribers.add(int(part))
-            for line in lines[3:]:
-                if line.startswith("SENT:"):
-                    for d in line[5:].split(","):
-                        if d.strip():
-                            reminded_dates.add(d.strip())
-            logger.info(
-                "Загружено подписчиков: %s, отправленных напоминаний: %s",
-                len(subscribers), len(reminded_dates),
-            )
-        else:
+        if not (pinned and pinned.text and pinned.text.startswith(REGISTRY_HEADER)):
             logger.info("Закреплённого списка нет — будет создан при первой регистрации")
+            return
+
+        registry_message_id = pinned.message_id
+        # Разбираем по признаку строки, а не по её номеру: так порядок строк
+        # и появление новых вебинаров ничего не ломают.
+        for line in pinned.text.split("\n")[1:]:
+            line = line.strip()
+            if line.startswith("SENT:"):
+                for d in line[5:].split(","):
+                    if d.strip():
+                        reminded_dates.add(d.strip())
+                continue
+
+            match = _DATE_LINE.match(line)
+            if match:
+                date_str, ids_part = match.group(1), match.group(2)
+                ids = {int(p) for p in (x.strip() for x in ids_part.split(","))
+                       if p.isdigit()}
+                if ids:
+                    registrations.setdefault(date_str, set()).update(ids)
+                continue
+
+            # Старый формат: голая строка из id без даты. Регистрации тогда были
+            # общими, а не по вебинарам, поэтому переносить их некуда.
+            if line and line.replace(",", "").isdigit():
+                logger.warning(
+                    "В закреплённом сообщении найден список в старом формате "
+                    "(без дат) — он пропущен: %s", line[:80],
+                )
+
+        logger.info(
+            "Загружено: вебинаров с записями %s, человек всего %s, "
+            "отправленных напоминаний %s",
+            len(registrations), len(all_subscribers()), len(reminded_dates),
+        )
     except TelegramError as e:
         logger.error("Не удалось прочитать список подписчиков: %s", e)
 
 
-def save_registry(bot) -> None:
-    """Обновляет закреплённое сообщение со списком подписчиков."""
+def save_registry(bot) -> bool:
+    """Обновляет закреплённое сообщение. True — сохранено (или сохранять некуда)."""
     global registry_message_id
 
     if not ADMIN_CHAT_ID:
-        return
+        # Режим без группы (локальный запуск): сохранять негде, но и падать
+        # незачем — про это уже написано ошибкой в лог при старте.
+        return True
 
     try:
         if registry_message_id:
@@ -188,8 +329,23 @@ def save_registry(bot) -> None:
                 message_id=msg.message_id,
                 disable_notification=True,
             )
+        return True
     except TelegramError as e:
         logger.error("Не удалось сохранить список подписчиков: %s", e)
+        return False
+
+
+def notify_group(bot, text: str) -> None:
+    """Пишет в рабочую группу. Молча не теряем — при ошибке шумим в лог."""
+    if not ADMIN_CHAT_ID:
+        return
+    try:
+        bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
+    except TelegramError as e:
+        logger.error(
+            "Не удалось написать в группу %s: %s. Проверьте ADMIN_CHAT_ID "
+            "и что бот добавлен в группу.", ADMIN_CHAT_ID, e,
+        )
 
 
 def is_admin_chat(update: Update) -> bool:
@@ -197,23 +353,53 @@ def is_admin_chat(update: Update) -> bool:
     return bool(ADMIN_CHAT_ID) and update.effective_chat.id == ADMIN_CHAT_ID
 
 
-def broadcast(bot, text: str):
-    """Рассылает текст всем зарегистрированным. Возвращает (доставлено, ошибок)."""
-    sent, failed = 0, []
-    for user_id in list(subscribers):
+# Ошибки, после которых человека действительно незачем держать в списке:
+# он заблокировал бота или удалил аккаунт. Всё остальное — таймаут, сбой сети,
+# лимит Телеграма, лишний тег в тексте рассылки — временное, и вычёркивать
+# человека из-за этого нельзя: он просто не получит одну рассылку.
+_PERMANENT_FAILURES = (
+    "bot was blocked by the user",
+    "user is deactivated",
+    "chat not found",
+    "peer_id_invalid",
+    "bot can't initiate conversation",
+)
+
+
+def is_permanent_failure(error) -> bool:
+    """Человек ушёл навсегда (True) или это временный сбой (False)?"""
+    if isinstance(error, Unauthorized):
+        return True
+    if isinstance(error, BadRequest):
+        text = str(error).lower()
+        return any(marker in text for marker in _PERMANENT_FAILURES)
+    return False
+
+
+def broadcast(bot, text: str, recipients):
+    """Рассылает текст указанным людям. Возвращает (доставлено, ошибок)."""
+    sent, failed, gone = 0, 0, []
+    for user_id in sorted(recipients):
         try:
             bot.send_message(chat_id=user_id, text=text, parse_mode='HTML')
             sent += 1
         except TelegramError as e:
-            logger.warning("Не доставлено %s: %s", user_id, e)
-            failed.append(user_id)
+            failed += 1
+            if is_permanent_failure(e):
+                logger.info("Убираю %s из списка — адресат недоступен: %s",
+                            user_id, e)
+                gone.append(user_id)
+            else:
+                logger.warning("Не доставлено %s (временная ошибка, оставляю "
+                               "в списке): %s", user_id, e)
         time.sleep(0.05)  # чтобы не упереться в лимиты Телеграма
 
-    for user_id in failed:
-        subscribers.discard(user_id)
-    if failed:
+    if gone:
+        for ids in registrations.values():
+            for user_id in gone:
+                ids.discard(user_id)
         save_registry(bot)
-    return sent, len(failed)
+    return sent, failed
 
 
 # ============================================================================
@@ -224,40 +410,39 @@ def broadcast(bot, text: str):
 def send_reminders(bot, today: datetime.date = None) -> int:
     """Проверяет, есть ли вебинар завтра, и если да — рассылает напоминание."""
     if today is None:
-        today = datetime.datetime.now(TIMEZONE).date()
+        today = today_local()
     tomorrow = today + datetime.timedelta(days=1)
 
     total = 0
     for w in WEBINARS:
-        try:
-            webinar_date = datetime.datetime.strptime(w["date"], "%d.%m.%Y").date()
-        except ValueError:
-            logger.error("Неверный формат даты в расписании: %s", w["date"])
-            continue
-
-        if webinar_date != tomorrow:
+        webinar_date = parse_date(w["date"])
+        if webinar_date is None or webinar_date != tomorrow:
             continue
         if w["date"] in reminded_dates:
             logger.info("Напоминание про %s уже отправляли", w["date"])
             continue
 
+        recipients = registrations.get(w["date"], set())
+        if not recipients:
+            # Намеренно НЕ помечаем как отправленное: иначе /stats покажет
+            # "напоминание уже отправлено" там, где не ушло ничего, а тот, кто
+            # запишется позже в тот же день, уже ничего не получит даже по
+            # ручной команде /check.
+            logger.info("На вебинар %s никто не записался — напоминать некому",
+                        w["date"])
+            continue
+
         text = TEXT_REMINDER.format(title=w["title"], time=w["time"])
-        sent, failed = broadcast(bot, text)
+        sent, failed = broadcast(bot, text, recipients)
         reminded_dates.add(w["date"])
         save_registry(bot)
         total += sent
 
         logger.info("Напоминание про %s: доставлено %s, ошибок %s",
                     w["date"], sent, failed)
-        if ADMIN_CHAT_ID:
-            try:
-                bot.send_message(
-                    chat_id=ADMIN_CHAT_ID,
-                    text=f"🔔 Отправлено напоминание про вебинар {w['date']}.\n"
-                         f"Доставлено: {sent}, не доставлено: {failed}.",
-                )
-            except TelegramError:
-                pass
+        notify_group(bot, TEXT_GROUP_REMINDER_SENT.format(
+            date=w["date"], sent=sent, failed=failed,
+        ))
     return total
 
 
@@ -275,9 +460,67 @@ def start(update: Update, context: CallbackContext) -> None:
     update.message.reply_text(TEXT_START, parse_mode='HTML')
 
 
+def button_label(w) -> str:
+    """Короткая подпись на кнопке: дата и имя спикера."""
+    short = w["title"].split(":")[0].strip()
+    if len(short) > 30:
+        short = short[:29].rstrip() + "…"
+    return f"{w['date']} — {short}"
+
+
 def register(update: Update, context: CallbackContext) -> None:
-    context.user_data['state'] = 'REGISTER'
-    update.message.reply_text(TEXT_REGISTER, parse_mode='HTML')
+    context.user_data['state'] = None
+    upcoming = upcoming_webinars()
+    if not upcoming:
+        update.message.reply_text(TEXT_NO_WEBINARS, parse_mode='HTML')
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(button_label(w), callback_data=f"reg:{w['date']}")]
+        for w in upcoming
+    ]
+    update.message.reply_text(
+        TEXT_REGISTER_PICK,
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def register_callback(update: Update, context: CallbackContext) -> None:
+    """Нажатие на кнопку выбора вебинара — здесь и происходит регистрация."""
+    query = update.callback_query
+    query.answer()   # без этого кнопка «крутится» у пользователя
+
+    date_str = query.data.partition(":")[2]
+    user = query.from_user
+    w = find_webinar(date_str)
+    webinar_date = parse_date(date_str) if w else None
+
+    # Кнопку могли нажать на старом сообщении — вебинара может уже не быть
+    if w is None or webinar_date is None or webinar_date < today_local():
+        query.edit_message_text(TEXT_REGISTER_GONE, parse_mode='HTML')
+        return
+
+    already = registrations.get(date_str, set())
+    if user.id in already:
+        query.edit_message_text(TEXT_REGISTER_ALREADY, parse_mode='HTML')
+        return
+
+    # Сначала записываем и сохраняем, и только потом подтверждаем человеку —
+    # иначе можно сказать «готово» там, где на самом деле ничего не сохранилось.
+    registrations.setdefault(date_str, set()).add(user.id)
+    if not save_registry(context.bot):
+        registrations[date_str].discard(user.id)
+        query.edit_message_text(TEXT_REGISTER_FAILED, parse_mode='HTML')
+        return
+
+    query.edit_message_text(
+        TEXT_REGISTER_DONE.format(date=w["date"], time=w["time"], title=w["title"]),
+        parse_mode='HTML',
+    )
+    notify_group(context.bot, TEXT_GROUP_REGISTRATION.format(
+        date=date_str, name=user.full_name, username=user.username or "—",
+    ))
 
 
 def questions(update: Update, context: CallbackContext) -> None:
@@ -301,26 +544,13 @@ def handle_message(update: Update, context: CallbackContext) -> None:
     state = context.user_data.get('state')
     user = update.effective_user
 
-    if state == 'REGISTER':
-        update.message.reply_text(TEXT_REGISTER_DONE, parse_mode='HTML')
-        subscribers.add(user.id)
-        save_registry(context.bot)
-        if ADMIN_CHAT_ID:
-            context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=f"✅ Регистрация: {update.message.text}\n"
-                     f"От: @{user.username or '—'} ({user.full_name})",
-            )
-        context.user_data['state'] = None
-
-    elif state == 'QUESTIONS':
+    if state == 'QUESTIONS':
         update.message.reply_text(TEXT_QUESTIONS_DONE, parse_mode='HTML')
-        if ADMIN_CHAT_ID:
-            context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=f"❓ Вопрос спикеру: {update.message.text}\n"
-                     f"От: @{user.username or '—'} ({user.full_name})",
-            )
+        notify_group(context.bot, TEXT_GROUP_QUESTION.format(
+            question=update.message.text,
+            username=user.username or "—",
+            name=user.full_name,
+        ))
         context.user_data['state'] = None
 
     else:
@@ -342,23 +572,20 @@ def stats_command(update: Update, context: CallbackContext) -> None:
     if not is_admin_chat(update):
         return
 
-    today = datetime.datetime.now(TIMEZONE).date()
-    upcoming = []
-    for w in WEBINARS:
-        try:
-            d = datetime.datetime.strptime(w["date"], "%d.%m.%Y").date()
-        except ValueError:
-            continue
-        if d >= today:
-            days = (d - today).days
-            mark = " (напоминание уже отправлено)" if w["date"] in reminded_dates else ""
-            upcoming.append(f"• {w['date']} — через {days} дн.{mark}")
+    today = today_local()
+    lines = []
+    for w in upcoming_webinars(today):
+        d = parse_date(w["date"])
+        days = (d - today).days
+        count = len(registrations.get(w["date"], set()))
+        mark = " (напоминание уже отправлено)" if w["date"] in reminded_dates else ""
+        lines.append(f"• {w['date']} — через {days} дн. — записано {count} чел.{mark}")
 
-    text = f"Зарегистрировано: {len(subscribers)} чел.\n\n"
-    text += "Ближайшие вебинары:\n" + ("\n".join(upcoming) if upcoming
+    text = f"Всего зарегистрировано: {len(all_subscribers())} чел.\n\n"
+    text += "Ближайшие вебинары:\n" + ("\n".join(lines) if lines
                                        else "— расписание пустое")
     text += f"\n\nНапоминания уходят в {REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d} " \
-            f"накануне (Москва)."
+            f"накануне ({TIMEZONE_LABEL})."
     update.message.reply_text(text)
 
 
@@ -375,12 +602,13 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
         )
         return
 
-    if not subscribers:
+    recipients = all_subscribers()
+    if not recipients:
         update.message.reply_text("Пока никто не зарегистрирован — рассылать некому.")
         return
 
-    update.message.reply_text(f"Начинаю рассылку — получателей: {len(subscribers)}")
-    sent, failed = broadcast(context.bot, text)
+    update.message.reply_text(f"Начинаю рассылку — получателей: {len(recipients)}")
+    sent, failed = broadcast(context.bot, text, recipients)
     update.message.reply_text(f"Готово. Доставлено: {sent}. Не доставлено: {failed}.")
 
 
@@ -441,6 +669,7 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler('stats', stats_command))
     dispatcher.add_handler(CommandHandler('broadcast', broadcast_command))
     dispatcher.add_handler(CommandHandler('check', check_command))
+    dispatcher.add_handler(CallbackQueryHandler(register_callback, pattern=r'^reg:'))
     dispatcher.add_handler(
         MessageHandler(Filters.text & ~Filters.command, handle_message)
     )
@@ -462,8 +691,8 @@ def main() -> None:
         time=datetime.time(hour=REMINDER_HOUR, minute=REMINDER_MINUTE,
                            tzinfo=TIMEZONE),
     )
-    logger.info("Ежедневная проверка напоминаний запланирована на %02d:%02d (Москва)",
-                REMINDER_HOUR, REMINDER_MINUTE)
+    logger.info("Ежедневная проверка напоминаний запланирована на %02d:%02d (%s)",
+                REMINDER_HOUR, REMINDER_MINUTE, TIMEZONE_LABEL)
 
     external_url = os.environ.get("RENDER_EXTERNAL_URL")
     port = int(os.environ.get("PORT", "10000"))
