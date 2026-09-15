@@ -1,4 +1,5 @@
 import datetime
+import html
 import logging
 import os
 import re
@@ -6,7 +7,13 @@ import time
 
 import pytz
 import tornado.web
-from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MessageEntity,
+)
 from telegram.ext import (
     Updater,
     CommandHandler,
@@ -132,14 +139,83 @@ TEXT_REMINDER = (
 # Сообщения, которые бот пишет в рабочую группу (их видите только вы)
 # ---------------------------------------------------------------------------
 
+# {user} — имя человека, по которому можно нажать и написать ему лично,
+# даже если у него нет @username.
 TEXT_GROUP_REGISTRATION = (
     "✅ Регистрация на {date}\n"
-    "{name} (@{username})"
+    "{user} ({username})"
 )
 
 TEXT_GROUP_QUESTION = (
     "❓ Вопрос спикеру: {question}\n"
-    "От: @{username} ({name})"
+    "От: {user} ({username})"
+)
+
+TEXT_NO_USERNAME = "без @username"
+
+# ---------------------------------------------------------------------------
+# Личный ответ человеку (/dm) — команда для рабочей группы
+# ---------------------------------------------------------------------------
+
+TEXT_DM_NO_REPLY = (
+    "Чтобы написать человеку лично, ответьте (reply) на сообщение бота "
+    "«✅ Регистрация…» или «❓ Вопрос спикеру…» и напишите:\n"
+    "/dm ваш текст"
+)
+
+TEXT_DM_NO_USER = (
+    "В этом сообщении не видно, кому писать. Ответьте именно на сообщение "
+    "«✅ Регистрация…» или «❓ Вопрос спикеру…»."
+)
+
+TEXT_DM_NO_TEXT = (
+    "Напишите текст после команды, например:\n/dm Спасибо за ваш вопрос!"
+)
+
+TEXT_DM_SENT = "✅ Отправлено."
+
+TEXT_DM_FAILED = "Не получилось отправить: {error}"
+
+# ---------------------------------------------------------------------------
+# Инструкция для участников рабочей группы (/help внутри группы)
+# ---------------------------------------------------------------------------
+
+TEXT_ADMIN_HELP = (
+    "🛠 <b>Команды в этой группе</b>\n\n"
+
+    "<b>/stats</b> — сколько человек записано на каждый вебинар и сколько "
+    "осталось места в списке.\n"
+    "<i>Когда нужно:</i> смотреть раз в день, пока идёт реклама.\n\n"
+
+    "<b>/broadcast текст</b> — разослать сообщение всем, кто записан.\n"
+    "<i>Пример:</i> /broadcast Завтра в 19:00 ждём вас на вебинаре!\n\n"
+
+    "<b>/dm текст</b> — написать лично одному человеку. Сначала ответьте "
+    "(reply) на сообщение «✅ Регистрация…» или «❓ Вопрос спикеру…», а потом "
+    "напишите команду.\n"
+    "<i>Пример:</i> /dm Спасибо за вопрос, передали спикеру!\n\n"
+
+    "<b>/cleanup</b> — освободить место в списке, убрав записи на прошедшие "
+    "вебинары. Сначала покажет, что именно удалит, и спросит подтверждение.\n"
+    "<i>Когда нужно:</i> если /stats пишет, что список почти заполнен.\n\n"
+
+    "<b>/check</b> — проверить вручную, не пора ли отправить напоминание.\n"
+    "<i>Когда нужно:</i> обычно никогда — бот делает это сам в 12:00 "
+    "накануне вебинара.\n\n"
+
+    "<b>/id</b> — показать номер этого чата. Нужен только при настройке.\n\n"
+
+    "———\n\n"
+
+    "<b>Как написать человеку лично</b>\n"
+    "Нажмите на его имя в сообщении «✅ Регистрация…» — откроется профиль, "
+    "оттуда можно написать. Если у человека закрыты личные сообщения, "
+    "ответьте на то же сообщение командой /dm — тогда напишет бот.\n\n"
+
+    "<b>Как добавить вебинар</b>\n"
+    "Вебинары и все тексты бота лежат в файле bot.py в самом верху. "
+    "Дата строго в формате ДД.ММ.ГГГГ. Напоминание уходит само за день до "
+    "вебинара — записывать его отдельно не нужно."
 )
 
 # {percent} — число, {left} — уже готовая фраза вида "53 регистрации"
@@ -469,12 +545,27 @@ def save_registry(bot) -> bool:
     return True
 
 
+def user_link(user) -> str:
+    """Имя человека ссылкой на его профиль.
+
+    Обычный аккаунт не может написать по числовому id — нужен либо @username,
+    либо вот такая ссылка. Телеграм гарантирует, что она работает для тех, кто
+    уже писал боту, а это все, кто регистрировался.
+    """
+    return (f'<a href="tg://user?id={user.id}">'
+            f'{html.escape(user.full_name)}</a>')
+
+
+def user_handle(user) -> str:
+    return f"@{html.escape(user.username)}" if user.username else TEXT_NO_USERNAME
+
+
 def notify_group(bot, text: str) -> None:
     """Пишет в рабочую группу. Молча не теряем — при ошибке шумим в лог."""
     if not ADMIN_CHAT_ID:
         return
     try:
-        bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
+        bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode='HTML')
     except TelegramError as e:
         logger.error(
             "Не удалось написать в группу %s: %s. Проверьте ADMIN_CHAT_ID "
@@ -653,7 +744,7 @@ def register_callback(update: Update, context: CallbackContext) -> None:
         parse_mode='HTML',
     )
     notify_group(context.bot, TEXT_GROUP_REGISTRATION.format(
-        date=date_str, name=user.full_name, username=user.username or "—",
+        date=date_str, user=user_link(user), username=user_handle(user),
     ))
 
 
@@ -663,6 +754,13 @@ def questions(update: Update, context: CallbackContext) -> None:
 
 
 def help_command(update: Update, context: CallbackContext) -> None:
+    # В рабочей группе /help показывает инструкцию по служебным командам,
+    # в личке — обычную помощь для участников вебинаров.
+    if is_admin_chat(update):
+        update.message.reply_text(TEXT_ADMIN_HELP, parse_mode='HTML')
+        return
+    if update.effective_chat.type != "private":
+        return
     update.message.reply_text(TEXT_HELP, parse_mode='HTML')
 
 
@@ -681,9 +779,10 @@ def handle_message(update: Update, context: CallbackContext) -> None:
     if state == 'QUESTIONS':
         update.message.reply_text(TEXT_QUESTIONS_DONE, parse_mode='HTML')
         notify_group(context.bot, TEXT_GROUP_QUESTION.format(
-            question=update.message.text,
-            username=user.username or "—",
-            name=user.full_name,
+            # текст пользователя экранируем: сообщение уходит как HTML
+            question=html.escape(update.message.text),
+            user=user_link(user),
+            username=user_handle(user),
         ))
         context.user_data['state'] = None
 
@@ -807,6 +906,52 @@ def cleanup_callback(update: Update, context: CallbackContext) -> None:
     ))
 
 
+def replied_user_id(message) -> int:
+    """Достаёт id человека из сообщения бота, на которое ответили.
+
+    Телеграм присылает ссылку tg://user?id=… либо как text_mention (там сразу
+    лежит пользователь), либо как обычный text_link — разбираем оба случая.
+    """
+    for entity in (message.entities or []):
+        if entity.type == MessageEntity.TEXT_MENTION and entity.user:
+            return entity.user.id
+        if entity.type == MessageEntity.TEXT_LINK and entity.url:
+            found = re.search(r"tg://user\?id=(\d+)", entity.url)
+            if found:
+                return int(found.group(1))
+    return 0
+
+
+def dm_command(update: Update, context: CallbackContext) -> None:
+    """/dm текст — написать лично тому, на чьё сообщение ответили."""
+    if not is_admin_chat(update):
+        return
+
+    replied = update.message.reply_to_message
+    if not replied:
+        update.message.reply_text(TEXT_DM_NO_REPLY, parse_mode='HTML')
+        return
+
+    user_id = replied_user_id(replied)
+    if not user_id:
+        update.message.reply_text(TEXT_DM_NO_USER, parse_mode='HTML')
+        return
+
+    text = update.message.text.partition(' ')[2].strip()
+    if not text:
+        update.message.reply_text(TEXT_DM_NO_TEXT, parse_mode='HTML')
+        return
+
+    try:
+        context.bot.send_message(chat_id=user_id, text=text, parse_mode='HTML')
+    except TelegramError as e:
+        logger.error("Не удалось написать лично %s: %s", user_id, e)
+        update.message.reply_text(TEXT_DM_FAILED.format(error=e))
+        return
+
+    update.message.reply_text(TEXT_DM_SENT)
+
+
 def broadcast_command(update: Update, context: CallbackContext) -> None:
     """/broadcast текст — разослать сообщение всем вручную."""
     if not is_admin_chat(update):
@@ -888,6 +1033,7 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler('broadcast', broadcast_command))
     dispatcher.add_handler(CommandHandler('check', check_command))
     dispatcher.add_handler(CommandHandler('cleanup', cleanup_command))
+    dispatcher.add_handler(CommandHandler('dm', dm_command))
     dispatcher.add_handler(CallbackQueryHandler(register_callback, pattern=r'^reg:'))
     dispatcher.add_handler(
         CallbackQueryHandler(cleanup_callback, pattern=r'^cleanup:')
