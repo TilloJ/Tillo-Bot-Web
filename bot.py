@@ -164,8 +164,10 @@ TEXT_DM_NO_REPLY = (
 )
 
 TEXT_DM_NO_USER = (
-    "В этом сообщении не видно, кому писать. Ответьте именно на сообщение "
-    "«✅ Регистрация…» или «❓ Вопрос спикеру…»."
+    "В этом сообщении не видно, кому писать.\n\n"
+    "Ответьте на сообщение «✅ Регистрация…» или «❓ Вопрос спикеру…». "
+    "У старых сообщений (до обновления бота) имя можно нажать только если "
+    "у человека есть @username — иначе попросите его написать боту ещё раз."
 )
 
 TEXT_DM_NO_TEXT = (
@@ -175,6 +177,35 @@ TEXT_DM_NO_TEXT = (
 TEXT_DM_SENT = "✅ Отправлено."
 
 TEXT_DM_FAILED = "Не получилось отправить: {error}"
+
+# ---------------------------------------------------------------------------
+# Рассылка (/broadcast)
+# ---------------------------------------------------------------------------
+
+TEXT_BROADCAST_USAGE = (
+    "Напишите текст после команды:\n\n"
+    "<b>/broadcast</b> Привет! Вебинар уже завтра\n"
+    "— всем, кто записан хоть на один вебинар\n\n"
+    "<b>/broadcast 30.09.2026</b> Привет! Вебинар уже завтра\n"
+    "— только тем, кто записан на этот вебинар"
+)
+
+TEXT_BROADCAST_NO_WEBINAR = (
+    "Вебинара {date} в списке нет. Проверьте дату — она пишется как "
+    "ДД.ММ.ГГГГ, например 30.09.2026."
+)
+
+TEXT_BROADCAST_EMPTY_ONE = "На {date} пока никто не записан — рассылать некому."
+
+TEXT_BROADCAST_EMPTY_ALL = "Пока никто не зарегистрирован — рассылать некому."
+
+TEXT_BROADCAST_START_ALL = "Начинаю рассылку всем записанным — получателей: {count}"
+
+TEXT_BROADCAST_START_ONE = (
+    "Начинаю рассылку тем, кто записан на {date} — получателей: {count}"
+)
+
+TEXT_BROADCAST_DONE = "Готово. Доставлено: {sent}. Не доставлено: {failed}."
 
 # ---------------------------------------------------------------------------
 # Инструкция для участников рабочей группы (/help внутри группы)
@@ -189,6 +220,11 @@ TEXT_ADMIN_HELP = (
 
     "<b>/broadcast текст</b> — разослать сообщение всем, кто записан.\n"
     "<i>Пример:</i> /broadcast Завтра в 19:00 ждём вас на вебинаре!\n\n"
+
+    "<b>/broadcast ДД.ММ.ГГГГ текст</b> — разослать только тем, кто записан "
+    "на один конкретный вебинар.\n"
+    "<i>Пример:</i> /broadcast 30.09.2026 Завтра ждём вас на вебинаре "
+    "Екатерины!\n\n"
 
     "<b>/dm текст</b> — написать лично одному человеку. Сначала ответьте "
     "(reply) на сообщение «✅ Регистрация…» или «❓ Вопрос спикеру…», а потом "
@@ -362,6 +398,7 @@ CHARS_PER_REGISTRATION = 11   # ~10 цифр id плюс запятая
 warned_levels = set()        # на каких порогах уже предупреждали
 
 _DATE_LINE = re.compile(r"^(\d{2}\.\d{2}\.\d{4}):(.*)$")
+_DATE_ONLY = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
 
 
 def all_subscribers() -> set:
@@ -930,11 +967,16 @@ def cleanup_callback(update: Update, context: CallbackContext) -> None:
     ))
 
 
-def replied_user_id(message) -> int:
+_USERNAME_IN_TEXT = re.compile(r"\(@([A-Za-z0-9_]{4,32})\)")
+
+
+def replied_user_id(bot, message) -> int:
     """Достаёт id человека из сообщения бота, на которое ответили.
 
     Телеграм присылает ссылку tg://user?id=… либо как text_mention (там сразу
     лежит пользователь), либо как обычный text_link — разбираем оба случая.
+    Если ссылки нет вовсе (сообщение написано до обновления бота), пробуем
+    найти в тексте @username и спросить у Телеграма его номер.
     """
     for entity in (message.entities or []):
         if entity.type == MessageEntity.TEXT_MENTION and entity.user:
@@ -943,6 +985,13 @@ def replied_user_id(message) -> int:
             found = re.search(r"tg://user\?id=(\d+)", entity.url)
             if found:
                 return int(found.group(1))
+
+    found = _USERNAME_IN_TEXT.search(message.text or "")
+    if found:
+        try:
+            return bot.get_chat(f"@{found.group(1)}").id
+        except TelegramError as e:
+            logger.warning("Не удалось найти @%s: %s", found.group(1), e)
     return 0
 
 
@@ -956,7 +1005,7 @@ def dm_command(update: Update, context: CallbackContext) -> None:
         update.message.reply_text(TEXT_DM_NO_REPLY, parse_mode='HTML')
         return
 
-    user_id = replied_user_id(replied)
+    user_id = replied_user_id(context.bot, replied)
     if not user_id:
         update.message.reply_text(TEXT_DM_NO_USER, parse_mode='HTML')
         return
@@ -981,22 +1030,41 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
     if not is_admin_chat(update):
         return
 
-    text = update.message.text.partition(' ')[2].strip()
-    if not text:
-        update.message.reply_text(
-            "Напишите текст после команды, например:\n"
-            "/broadcast Привет! Вебинар уже завтра в 19:00"
-        )
+    rest = update.message.text.partition(' ')[2].strip()
+
+    # Первым словом можно указать дату — тогда рассылка уйдёт только тем,
+    # кто записан именно на этот вебинар.
+    date_str = ""
+    first, _, tail = rest.partition(' ')
+    if _DATE_ONLY.match(first):
+        date_str, rest = first, tail.strip()
+
+    if not rest:
+        update.message.reply_text(TEXT_BROADCAST_USAGE, parse_mode='HTML')
         return
 
-    recipients = all_subscribers()
-    if not recipients:
-        update.message.reply_text("Пока никто не зарегистрирован — рассылать некому.")
-        return
+    if date_str:
+        if not find_webinar(date_str) and date_str not in registrations:
+            update.message.reply_text(
+                TEXT_BROADCAST_NO_WEBINAR.format(date=date_str))
+            return
+        recipients = set(registrations.get(date_str, set()))
+        if not recipients:
+            update.message.reply_text(
+                TEXT_BROADCAST_EMPTY_ONE.format(date=date_str))
+            return
+        update.message.reply_text(TEXT_BROADCAST_START_ONE.format(
+            date=date_str, count=len(recipients)))
+    else:
+        recipients = all_subscribers()
+        if not recipients:
+            update.message.reply_text(TEXT_BROADCAST_EMPTY_ALL)
+            return
+        update.message.reply_text(TEXT_BROADCAST_START_ALL.format(
+            count=len(recipients)))
 
-    update.message.reply_text(f"Начинаю рассылку — получателей: {len(recipients)}")
-    sent, failed = broadcast(context.bot, text, recipients)
-    update.message.reply_text(f"Готово. Доставлено: {sent}. Не доставлено: {failed}.")
+    sent, failed = broadcast(context.bot, rest, recipients)
+    update.message.reply_text(TEXT_BROADCAST_DONE.format(sent=sent, failed=failed))
 
 
 def check_command(update: Update, context: CallbackContext) -> None:
