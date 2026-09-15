@@ -174,6 +174,12 @@ TEXT_DM_NO_TEXT = (
     "Напишите текст после команды, например:\n/dm Спасибо за ваш вопрос!"
 )
 
+TEXT_DM_AMBIGUOUS = (
+    "В этом сообщении сразу {count} человек — непонятно, кому из них писать.\n\n"
+    "Ответьте на сообщение про <b>одного</b> человека: «✅ Регистрация…», "
+    "«❓ Вопрос спикеру…» или карточку из /who."
+)
+
 TEXT_DM_SENT = "✅ Отправлено."
 
 TEXT_DM_FAILED = "Не получилось отправить: {error}"
@@ -213,15 +219,21 @@ TEXT_BROADCAST_DONE = "Готово. Доставлено: {sent}. Не дост
 
 TEXT_WHO_EMPTY = "Пока никто не записан."
 
+# /who отвечает на вопрос «кто», а не «сколько» — считает /stats.
 TEXT_WHO_HEADER = (
-    "👥 <b>Кто записан</b>\n\n"
-    "{body}\n"
-    "На любое имя можно нажать, чтобы открыть профиль. Чтобы написать "
-    "человеку через бота — ответьте (reply) на это сообщение командой /dm."
+    "👥 <b>Карточки записавшихся{scope}</b>\n"
+    "Чтобы написать человеку через бота — ответьте (reply) на его карточку "
+    "командой /dm. По имени можно нажать, чтобы открыть профиль.\n"
+    "<i>Сколько человек и сколько осталось места — это /stats.</i>"
 )
 
+TEXT_WHO_SCOPE = " на {date}"
+
+# Карточка одного человека — ровно один человек, поэтому /dm не ошибётся
+TEXT_WHO_CARD = "👤 {user}\n<i>записан(а) на {dates}</i>"
+
 TEXT_WHO_TOO_MANY = (
-    "Записавшихся уже {count} — список не поместится в одно сообщение.\n"
+    "Записавшихся уже {count} — столько карточек в чат не поместится.\n"
     "Укажите дату, например: <b>/who {example}</b>"
 )
 
@@ -229,7 +241,7 @@ TEXT_WHO_NO_WEBINAR = "Вебинара {date} в списке нет."
 
 TEXT_WHO_UNKNOWN_NAME = "без имени"
 
-WHO_MAX = 60   # сколько человек влезает в одно сообщение с запасом
+WHO_MAX = 15   # больше карточек за раз Телеграм не даст отправить подряд
 
 # ---------------------------------------------------------------------------
 # Инструкция для участников рабочей группы (/help внутри группы)
@@ -238,8 +250,8 @@ WHO_MAX = 60   # сколько человек влезает в одно соо
 TEXT_ADMIN_HELP = (
     "🛠 <b>Команды в этой группе</b>\n\n"
 
-    "<b>/stats</b> — сколько человек записано на каждый вебинар и сколько "
-    "осталось места в списке.\n"
+    "<b>/stats</b> — <b>сколько</b>: человек на каждый вебинар, место в списке, "
+    "ушли ли напоминания.\n"
     "<i>Когда нужно:</i> смотреть раз в день, пока идёт реклама.\n\n"
 
     "<b>/broadcast текст</b> — разослать сообщение всем, кто записан.\n"
@@ -255,9 +267,10 @@ TEXT_ADMIN_HELP = (
     "напишите команду.\n"
     "<i>Пример:</i> /dm Спасибо за вопрос, передали спикеру!\n\n"
 
-    "<b>/who</b> — свежий список всех, кто записан, с именами.\n"
-    "<i>Когда нужно:</i> если /dm пишет, что не видно кому писать — ответьте "
-    "командой /dm уже на этот список. Можно указать дату: /who 30.09.2026\n\n"
+    "<b>/who</b> — <b>кто именно</b>: по карточке на каждого записавшегося, "
+    "с именем, на которое можно нажать.\n"
+    "<i>Когда нужно:</i> чтобы написать конкретному человеку — ответьте "
+    "командой /dm на его карточку. Можно указать дату: /who 30.09.2026\n\n"
 
     "<b>/cleanup</b> — освободить место в списке, убрав записи на прошедшие "
     "вебинары. Сначала покажет, что именно удалит, и спросит подтверждение.\n"
@@ -968,14 +981,32 @@ def who_command(update: Update, context: CallbackContext) -> None:
             parse_mode='HTML')
         return
 
-    blocks = []
-    for date_str in dates:
-        ids = sorted(registrations.get(date_str, set()))
-        people = "\n".join(f"• {person_link(context.bot, uid)}" for uid in ids)
-        blocks.append(f"<b>{date_str}</b> — {records_phrase(len(ids))}\n{people}")
     update.message.reply_text(
-        TEXT_WHO_HEADER.format(body="\n\n".join(blocks) + "\n"),
+        TEXT_WHO_HEADER.format(
+            scope=TEXT_WHO_SCOPE.format(date=wanted) if wanted else ""),
         parse_mode='HTML', disable_web_page_preview=True)
+
+    # По карточке на человека: в каждой ровно один, поэтому ответ командой
+    # /dm всегда однозначен.
+    on_dates = {}
+    for date_str in dates:
+        for uid in registrations.get(date_str, set()):
+            on_dates.setdefault(uid, []).append(date_str)
+
+    for uid in sorted(on_dates, key=lambda u: person_link(context.bot, u)):
+        try:
+            update.message.reply_text(
+                TEXT_WHO_CARD.format(
+                    user=person_link(context.bot, uid),
+                    dates=", ".join(sorted(
+                        on_dates[uid],
+                        key=lambda d: parse_date(d) or datetime.date.max)),
+                ),
+                parse_mode='HTML', disable_web_page_preview=True)
+        except TelegramError as e:
+            logger.error("Не удалось отправить карточку %s: %s", uid, e)
+            break
+        time.sleep(0.3)   # лимит Телеграма на сообщения в группу
 
 
 def records_phrase(count: int) -> str:
@@ -1056,24 +1087,28 @@ def cleanup_callback(update: Update, context: CallbackContext) -> None:
     ))
 
 
-def replied_user_id(message) -> int:
-    """Достаёт id человека из сообщения бота, на которое ответили.
+def replied_user_ids(message):
+    """Все id людей, упомянутых в сообщении, на которое ответили.
 
-    Телеграм присылает ссылку tg://user?id=… либо как text_mention (там сразу
-    лежит пользователь), либо как обычный text_link — разбираем оба случая.
+    Возвращаем ВСЕХ, а не первого: если в сообщении несколько человек, брать
+    первого попавшегося нельзя — личное сообщение молча уйдёт не тому.
 
     По @username id узнать нельзя: getChat принимает @имя только для каналов и
     супергрупп, но не для людей. Поэтому в сообщениях, написанных до появления
     ссылок, адресата взять неоткуда — для них есть команда /who.
     """
+    found = []
     for entity in (message.entities or []):
+        user_id = 0
         if entity.type == MessageEntity.TEXT_MENTION and entity.user:
-            return entity.user.id
-        if entity.type == MessageEntity.TEXT_LINK and entity.url:
-            found = re.search(r"tg://user\?id=(\d+)", entity.url)
-            if found:
-                return int(found.group(1))
-    return 0
+            user_id = entity.user.id
+        elif entity.type == MessageEntity.TEXT_LINK and entity.url:
+            match = re.search(r"tg://user\?id=(\d+)", entity.url)
+            if match:
+                user_id = int(match.group(1))
+        if user_id and user_id not in found:
+            found.append(user_id)
+    return found
 
 
 def dm_command(update: Update, context: CallbackContext) -> None:
@@ -1086,10 +1121,16 @@ def dm_command(update: Update, context: CallbackContext) -> None:
         update.message.reply_text(TEXT_DM_NO_REPLY, parse_mode='HTML')
         return
 
-    user_id = replied_user_id(replied)
-    if not user_id:
+    people = replied_user_ids(replied)
+    if not people:
         update.message.reply_text(TEXT_DM_NO_USER, parse_mode='HTML')
         return
+    if len(people) > 1:
+        # Ни в коем случае не угадываем: личное сообщение ушло бы не тому.
+        update.message.reply_text(
+            TEXT_DM_AMBIGUOUS.format(count=len(people)), parse_mode='HTML')
+        return
+    user_id = people[0]
 
     text = update.message.text.partition(' ')[2].strip()
     if not text:
