@@ -165,9 +165,9 @@ TEXT_DM_NO_REPLY = (
 
 TEXT_DM_NO_USER = (
     "В этом сообщении не видно, кому писать.\n\n"
-    "Ответьте на сообщение «✅ Регистрация…» или «❓ Вопрос спикеру…». "
-    "У старых сообщений (до обновления бота) имя можно нажать только если "
-    "у человека есть @username — иначе попросите его написать боту ещё раз."
+    "Так бывает со старыми сообщениями — теми, что бот написал до обновления. "
+    "Напишите <b>/who</b>: бот пришлёт свежий список всех записавшихся, и уже "
+    "на него можно отвечать командой /dm."
 )
 
 TEXT_DM_NO_TEXT = (
@@ -208,6 +208,30 @@ TEXT_BROADCAST_START_ONE = (
 TEXT_BROADCAST_DONE = "Готово. Доставлено: {sent}. Не доставлено: {failed}."
 
 # ---------------------------------------------------------------------------
+# Список записавшихся (/who)
+# ---------------------------------------------------------------------------
+
+TEXT_WHO_EMPTY = "Пока никто не записан."
+
+TEXT_WHO_HEADER = (
+    "👥 <b>Кто записан</b>\n\n"
+    "{body}\n"
+    "На любое имя можно нажать, чтобы открыть профиль. Чтобы написать "
+    "человеку через бота — ответьте (reply) на это сообщение командой /dm."
+)
+
+TEXT_WHO_TOO_MANY = (
+    "Записавшихся уже {count} — список не поместится в одно сообщение.\n"
+    "Укажите дату, например: <b>/who {example}</b>"
+)
+
+TEXT_WHO_NO_WEBINAR = "Вебинара {date} в списке нет."
+
+TEXT_WHO_UNKNOWN_NAME = "без имени"
+
+WHO_MAX = 60   # сколько человек влезает в одно сообщение с запасом
+
+# ---------------------------------------------------------------------------
 # Инструкция для участников рабочей группы (/help внутри группы)
 # ---------------------------------------------------------------------------
 
@@ -230,6 +254,10 @@ TEXT_ADMIN_HELP = (
     "(reply) на сообщение «✅ Регистрация…» или «❓ Вопрос спикеру…», а потом "
     "напишите команду.\n"
     "<i>Пример:</i> /dm Спасибо за вопрос, передали спикеру!\n\n"
+
+    "<b>/who</b> — свежий список всех, кто записан, с именами.\n"
+    "<i>Когда нужно:</i> если /dm пишет, что не видно кому писать — ответьте "
+    "командой /dm уже на этот список. Можно указать дату: /who 30.09.2026\n\n"
 
     "<b>/cleanup</b> — освободить место в списке, убрав записи на прошедшие "
     "вебинары. Сначала покажет, что именно удалит, и спросит подтверждение.\n"
@@ -889,6 +917,67 @@ def stats_command(update: Update, context: CallbackContext) -> None:
     update.message.reply_text(text)
 
 
+_name_cache = {}
+
+
+def person_link(bot, user_id: int) -> str:
+    """Имя человека ссылкой. Имя спрашиваем у Телеграма и запоминаем."""
+    name = _name_cache.get(user_id)
+    if name is None:
+        try:
+            chat = bot.get_chat(user_id)
+            name = (chat.full_name or "").strip() or f"id {user_id}"
+            if chat.username:
+                name = f"{name} (@{chat.username})"
+        except TelegramError as e:
+            # Имя узнать не вышло — ссылка всё равно рабочая, она строится
+            # из id, который у нас уже есть.
+            logger.info("Не удалось узнать имя %s: %s", user_id, e)
+            name = f"{TEXT_WHO_UNKNOWN_NAME} · id {user_id}"
+        _name_cache[user_id] = name
+    return f'<a href="tg://user?id={user_id}">{html.escape(name)}</a>'
+
+
+def who_command(update: Update, context: CallbackContext) -> None:
+    """/who [ДД.ММ.ГГГГ] — свежий список записавшихся, по именам можно нажимать."""
+    if not is_admin_chat(update):
+        return
+
+    wanted = update.message.text.partition(' ')[2].strip()
+    if wanted and not _DATE_ONLY.match(wanted):
+        update.message.reply_text(TEXT_WHO_NO_WEBINAR.format(date=wanted))
+        return
+
+    dates = [wanted] if wanted else sorted(
+        (d for d, ids in registrations.items() if ids),
+        key=lambda d: parse_date(d) or datetime.date.max,
+    )
+    if wanted and not registrations.get(wanted):
+        update.message.reply_text(
+            TEXT_WHO_NO_WEBINAR.format(date=wanted) if not find_webinar(wanted)
+            else TEXT_BROADCAST_EMPTY_ONE.format(date=wanted))
+        return
+    if not dates:
+        update.message.reply_text(TEXT_WHO_EMPTY)
+        return
+
+    total = sum(len(registrations.get(d, ())) for d in dates)
+    if total > WHO_MAX:
+        update.message.reply_text(
+            TEXT_WHO_TOO_MANY.format(count=total, example=dates[0]),
+            parse_mode='HTML')
+        return
+
+    blocks = []
+    for date_str in dates:
+        ids = sorted(registrations.get(date_str, set()))
+        people = "\n".join(f"• {person_link(context.bot, uid)}" for uid in ids)
+        blocks.append(f"<b>{date_str}</b> — {records_phrase(len(ids))}\n{people}")
+    update.message.reply_text(
+        TEXT_WHO_HEADER.format(body="\n\n".join(blocks) + "\n"),
+        parse_mode='HTML', disable_web_page_preview=True)
+
+
 def records_phrase(count: int) -> str:
     """'12 записей' — в нужном падеже."""
     return f"{count} " + plural_ru(count, "запись", "записи", "записей")
@@ -967,16 +1056,15 @@ def cleanup_callback(update: Update, context: CallbackContext) -> None:
     ))
 
 
-_USERNAME_IN_TEXT = re.compile(r"\(@([A-Za-z0-9_]{4,32})\)")
-
-
-def replied_user_id(bot, message) -> int:
+def replied_user_id(message) -> int:
     """Достаёт id человека из сообщения бота, на которое ответили.
 
     Телеграм присылает ссылку tg://user?id=… либо как text_mention (там сразу
     лежит пользователь), либо как обычный text_link — разбираем оба случая.
-    Если ссылки нет вовсе (сообщение написано до обновления бота), пробуем
-    найти в тексте @username и спросить у Телеграма его номер.
+
+    По @username id узнать нельзя: getChat принимает @имя только для каналов и
+    супергрупп, но не для людей. Поэтому в сообщениях, написанных до появления
+    ссылок, адресата взять неоткуда — для них есть команда /who.
     """
     for entity in (message.entities or []):
         if entity.type == MessageEntity.TEXT_MENTION and entity.user:
@@ -985,13 +1073,6 @@ def replied_user_id(bot, message) -> int:
             found = re.search(r"tg://user\?id=(\d+)", entity.url)
             if found:
                 return int(found.group(1))
-
-    found = _USERNAME_IN_TEXT.search(message.text or "")
-    if found:
-        try:
-            return bot.get_chat(f"@{found.group(1)}").id
-        except TelegramError as e:
-            logger.warning("Не удалось найти @%s: %s", found.group(1), e)
     return 0
 
 
@@ -1005,7 +1086,7 @@ def dm_command(update: Update, context: CallbackContext) -> None:
         update.message.reply_text(TEXT_DM_NO_REPLY, parse_mode='HTML')
         return
 
-    user_id = replied_user_id(context.bot, replied)
+    user_id = replied_user_id(replied)
     if not user_id:
         update.message.reply_text(TEXT_DM_NO_USER, parse_mode='HTML')
         return
@@ -1126,6 +1207,7 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler('check', check_command))
     dispatcher.add_handler(CommandHandler('cleanup', cleanup_command))
     dispatcher.add_handler(CommandHandler('dm', dm_command))
+    dispatcher.add_handler(CommandHandler('who', who_command))
     dispatcher.add_handler(CallbackQueryHandler(register_callback, pattern=r'^reg:'))
     dispatcher.add_handler(
         CallbackQueryHandler(cleanup_callback, pattern=r'^cleanup:')
