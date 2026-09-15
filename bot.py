@@ -142,6 +142,22 @@ TEXT_GROUP_QUESTION = (
     "От: @{username} ({name})"
 )
 
+# {percent} — число, {left} — уже готовая фраза вида "53 регистрации"
+TEXT_GROUP_CAPACITY = (
+    "⚠️ Список записавшихся заполнен на {percent}%.\n"
+    "Осталось место примерно на {left}. Когда оно закончится, новые "
+    "регистрации перестанут сохраняться — сообщите разработчику заранее."
+)
+
+# Строчка про запас места в /stats
+TEXT_STATS_CAPACITY = (
+    "Место в списке: занято {percent}%, ещё примерно {left}."
+)
+
+TEXT_STATS_CAPACITY_WARN = (
+    "⚠️ Список заполнен на {percent}% — осталось примерно {left}!"
+)
+
 TEXT_GROUP_REMINDER_SENT = (
     "🔔 Отправлено напоминание про вебинар {date}.\n"
     "Доставлено: {sent}, не доставлено: {failed}."
@@ -228,6 +244,15 @@ registrations = {}
 reminded_dates = set()   # по каким вебинарам напоминание уже уходило
 registry_message_id = None
 
+# Закреплённое сообщение вмещает 4096 символов. Когда список упрётся в этот
+# предел, новые регистрации перестанут сохраняться, поэтому бот предупреждает
+# в группе заранее — на 80% и на 95% заполнения.
+REGISTRY_LIMIT = 4096
+CAPACITY_WARN_LEVELS = (80, 95)
+CHARS_PER_REGISTRATION = 11   # ~10 цифр id плюс запятая
+
+warned_levels = set()        # на каких порогах уже предупреждали
+
 _DATE_LINE = re.compile(r"^(\d{2}\.\d{2}\.\d{4}):(.*)$")
 
 
@@ -247,7 +272,39 @@ def registry_text() -> str:
         if ids:
             lines.append(f"{date_str}:" + ",".join(str(i) for i in sorted(ids)))
     lines.append("SENT:" + ",".join(sorted(reminded_dates)))
+    if warned_levels:
+        lines.append("WARN:" + ",".join(str(l) for l in sorted(warned_levels)))
     return "\n".join(lines)
+
+
+def capacity_percent() -> int:
+    """На сколько процентов заполнено закреплённое сообщение."""
+    return min(100, round(len(registry_text()) * 100 / REGISTRY_LIMIT))
+
+
+def capacity_left() -> int:
+    """Сколько ещё регистраций примерно поместится."""
+    free = REGISTRY_LIMIT - len(registry_text())
+    return max(0, free // CHARS_PER_REGISTRATION)
+
+
+def plural_ru(number: int, one: str, few: str, many: str) -> str:
+    """Русские числительные: 1 регистрацию, 2 регистрации, 5 регистраций."""
+    if number % 100 in (11, 12, 13, 14):
+        return many
+    last = number % 10
+    if last == 1:
+        return one
+    if last in (2, 3, 4):
+        return few
+    return many
+
+
+def capacity_left_phrase() -> str:
+    """'53 регистрации' — уже в нужном падеже, чтобы подставить в текст."""
+    left = capacity_left()
+    return f"{left} " + plural_ru(left, "регистрацию", "регистрации",
+                                  "регистраций")
 
 
 def load_registry(bot) -> None:
@@ -277,6 +334,12 @@ def load_registry(bot) -> None:
                 for d in line[5:].split(","):
                     if d.strip():
                         reminded_dates.add(d.strip())
+                continue
+
+            if line.startswith("WARN:"):
+                for lvl in line[5:].split(","):
+                    if lvl.strip().isdigit():
+                        warned_levels.add(int(lvl.strip()))
                 continue
 
             match = _DATE_LINE.match(line)
@@ -314,6 +377,14 @@ def save_registry(bot) -> bool:
         # незачем — про это уже написано ошибкой в лог при старте.
         return True
 
+    # Пороги, которые пройдены впервые. Считаем ДО записи, чтобы отметка
+    # "предупреждали" сохранилась тем же самым сообщением, а не следующим.
+    percent = capacity_percent()
+    warned_levels.difference_update({l for l in list(warned_levels) if percent < l})
+    pending = [l for l in CAPACITY_WARN_LEVELS
+               if l not in warned_levels and percent >= l]
+    warned_levels.update(pending)
+
     try:
         if registry_message_id:
             bot.edit_message_text(
@@ -329,10 +400,18 @@ def save_registry(bot) -> bool:
                 message_id=msg.message_id,
                 disable_notification=True,
             )
-        return True
     except TelegramError as e:
+        # Не сохранилось — значит и про предупреждение отмечать нечего
+        warned_levels.difference_update(pending)
         logger.error("Не удалось сохранить список подписчиков: %s", e)
         return False
+
+    for level in pending:
+        logger.warning("Список заполнен на %s%% — предупреждаю группу", percent)
+        notify_group(bot, TEXT_GROUP_CAPACITY.format(
+            percent=percent, left=capacity_left_phrase(),
+        ))
+    return True
 
 
 def notify_group(bot, text: str) -> None:
@@ -586,6 +665,12 @@ def stats_command(update: Update, context: CallbackContext) -> None:
                                        else "— расписание пустое")
     text += f"\n\nНапоминания уходят в {REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d} " \
             f"накануне ({TIMEZONE_LABEL})."
+
+    percent = capacity_percent()
+    template = (TEXT_STATS_CAPACITY_WARN if percent >= CAPACITY_WARN_LEVELS[0]
+                else TEXT_STATS_CAPACITY)
+    text += "\n\n" + template.format(percent=percent,
+                                      left=capacity_left_phrase())
     update.message.reply_text(text)
 
 
