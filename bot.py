@@ -348,6 +348,10 @@ registrations = {}
 reminded_dates = set()   # по каким вебинарам напоминание уже уходило
 registry_message_id = None
 
+# Удалось ли прочитать список при старте. Пока False — записывать НЕЛЬЗЯ:
+# пустая память затрёт закреплённое сообщение со всеми регистрациями.
+registry_loaded = False
+
 # Закреплённое сообщение вмещает 4096 символов. Когда список упрётся в этот
 # предел, новые регистрации перестанут сохраняться, поэтому бот предупреждает
 # в группе заранее — на 80% и на 95% заполнения.
@@ -438,23 +442,28 @@ def capacity_left_phrase() -> str:
                                   "регистраций")
 
 
-def load_registry(bot) -> None:
-    """Читает список подписчиков из закреплённого сообщения в группе."""
-    global registry_message_id
+def load_registry(bot) -> bool:
+    """Читает список подписчиков из закреплённого сообщения в группе.
+
+    True — прочитали (в том числе «списка ещё нет, он пустой»).
+    False — не смогли достучаться до группы; писать в этом состоянии нельзя.
+    """
+    global registry_message_id, registry_loaded
 
     if not ADMIN_CHAT_ID:
         logger.error(
             "ADMIN_CHAT_ID не задан! Регистрации НЕ сохраняются, уведомления "
             "в группу НЕ приходят, служебные команды отключены."
         )
-        return
+        return False
 
     try:
         chat = bot.get_chat(ADMIN_CHAT_ID)
         pinned = chat.pinned_message
         if not (pinned and pinned.text and pinned.text.startswith(REGISTRY_HEADER)):
             logger.info("Закреплённого списка нет — будет создан при первой регистрации")
-            return
+            registry_loaded = True
+            return True
 
         registry_message_id = pinned.message_id
         # Разбираем по признаку строки, а не по её номеру: так порядок строк
@@ -495,8 +504,12 @@ def load_registry(bot) -> None:
             "отправленных напоминаний %s",
             len(registrations), len(all_subscribers()), len(reminded_dates),
         )
+        registry_loaded = True
+        return True
     except TelegramError as e:
+        registry_loaded = False
         logger.error("Не удалось прочитать список подписчиков: %s", e)
+        return False
 
 
 def save_registry(bot) -> bool:
@@ -507,6 +520,17 @@ def save_registry(bot) -> bool:
         # Режим без группы (локальный запуск): сохранять негде, но и падать
         # незачем — про это уже написано ошибкой в лог при старте.
         return True
+
+    # Если при старте список прочитать не удалось (сеть моргнула на холодном
+    # старте), в памяти он пустой. Записать его сейчас — значит стереть всех,
+    # кто уже был записан. Поэтому сначала пробуем перечитать: load_registry
+    # ДОПОЛНЯЕТ память, а не заменяет её, поэтому свежая регистрация не теряется.
+    if not registry_loaded:
+        logger.error("Список не был прочитан при старте — перечитываю, "
+                     "чтобы не затереть существующие регистрации")
+        if not load_registry(bot):
+            logger.error("Список по-прежнему недоступен — НИЧЕГО не пишу")
+            return False
 
     # Пороги, которые пройдены впервые. Считаем ДО записи, чтобы отметка
     # "предупреждали" сохранилась тем же самым сообщением, а не следующим.
