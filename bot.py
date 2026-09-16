@@ -1055,8 +1055,12 @@ def wakeup_times():
             start = parse_time(w.get("time"))
             if start is None:
                 continue
+            # Будильник ставим чуть ПОЗЖЕ начала окна, а не раньше: сервис
+            # просыпается примерно на 15 минут, и эти 15 минут должны целиком
+            # попасть внутрь окна. Если будить до его открытия, на проверки
+            # внутри окна остаётся всего несколько минут.
             moment = (datetime.datetime.combine(datetime.date(2000, 1, 1), start)
-                      - datetime.timedelta(minutes=MINUTES_BEFORE_START + 10))
+                      - datetime.timedelta(minutes=MINUTES_BEFORE_START - 5))
             needed.add(moment.strftime("%H:%M"))
     return sorted(needed)
 
