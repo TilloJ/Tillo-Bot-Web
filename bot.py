@@ -1582,7 +1582,21 @@ def check_command(update: Update, context: CallbackContext) -> None:
 
 
 class HealthHandler(tornado.web.RequestHandler):
+    """Страница для будильников cron-job.org.
+
+    Отвечаем максимально скучно: обычный текст, два байта, без ETag и без
+    кэширования. Будильнику нужен только код 200 — всё остальное лишний повод
+    для ошибок на его стороне.
+    """
+
     SUPPORTED_METHODS = ["GET", "HEAD"]
+
+    def compute_etag(self):
+        return None      # без ETag не будет и ответов 304 на If-None-Match
+
+    def set_default_headers(self) -> None:
+        self.set_header("Content-Type", "text/plain; charset=utf-8")
+        self.set_header("Cache-Control", "no-store")
 
     def get(self) -> None:
         self.set_status(200)
