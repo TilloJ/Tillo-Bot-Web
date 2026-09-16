@@ -317,6 +317,18 @@ TEXT_STATS_CAPACITY_WARN = (
     "⚠️ Список заполнен на {percent}% — осталось примерно {left}!"
 )
 
+# Записи из старого формата, которые не привязаны к вебинару
+TEXT_STATS_UNASSIGNED = (
+    "⚠️ Не привязаны к вебинару (записаны до того, как в этот день появился "
+    "второй вебинар — непонятно, на какой именно):\n{items}\n"
+    "Напоминание им НЕ уйдёт. Попросите их записаться заново через /register."
+)
+
+TEXT_STATS_DUPLICATES = (
+    "⚠️ Вебинары с одинаковой датой и временем: {items}\n"
+    "Их невозможно различить — поменяйте время у одного из них."
+)
+
 # ---------------------------------------------------------------------------
 # Очистка списка от прошедших вебинаров (/cleanup)
 # ---------------------------------------------------------------------------
@@ -372,12 +384,12 @@ def courses_text() -> str:
     if upcoming:
         lines.append(TEXT_COURSES_UPCOMING)
         for i, (_, w) in enumerate(upcoming, start=1):
-            lines.append(f"{i}. <b>{w['date']}</b> в {w['time']} — {w['title']}")
+            lines.append(f"{i}. <b>{w['date']}</b> в {w['time']} — {clean_title(w)}")
         lines.append("")
     if past:
         lines.append(TEXT_COURSES_PAST)
         for _, w in past:
-            lines.append(f"• <b>{w['date']}</b> — {w['title']}")
+            lines.append(f"• <b>{w['date']}</b> в {w['time']} — {clean_title(w)}")
         lines.append("")
     if not upcoming and not past:
         lines.append(TEXT_NO_WEBINARS)
@@ -410,11 +422,59 @@ def upcoming_webinars(today: datetime.date = None):
     return [w for _, w in found]
 
 
-def find_webinar(date_str: str):
+def webinar_key(w) -> str:
+    """Уникальный ключ вебинара — дата и время: '30.09.2026-1900'.
+
+    В один день может быть несколько вебинаров, поэтому одной даты мало.
+    Время приводим к цифрам, чтобы '19:00', '19.00' и '19 00' давали один
+    и тот же ключ, а не три разных.
+    """
+    return f"{w['date']}-{re.sub(r'[^0-9]', '', str(w.get('time', '')))}"
+
+
+def key_date(key: str):
+    """Дата из ключа: '30.09.2026-1900' -> date(2026, 9, 30)."""
+    return parse_date(key.split("-", 1)[0])
+
+
+_LEADING_TIME = re.compile(r"^\s*\d{1,2}[.:\-]\d{2}\s+")
+
+
+def clean_title(w) -> str:
+    """Название без времени в начале — время бот показывает отдельно.
+
+    Владелец может писать '11-00 Имя: тема', '11:00 Имя: тема' или просто
+    'Имя: тема' — все три варианта выглядят одинаково.
+    """
+    return _LEADING_TIME.sub("", w["title"]).strip()
+
+
+def find_webinar(key: str):
+    """Вебинар по ключу. Для совместимости понимает и просто дату, если
+    в этот день вебинар ровно один."""
     for w in WEBINARS:
-        if w["date"] == date_str:
+        if webinar_key(w) == key:
             return w
-    return None
+    same_day = [w for w in WEBINARS if w["date"] == key]
+    return same_day[0] if len(same_day) == 1 else None
+
+
+def webinars_on(date_str: str):
+    """Все вебинары этого дня, по времени."""
+    found = [w for w in WEBINARS if w["date"] == date_str]
+    found.sort(key=webinar_key)
+    return found
+
+
+def duplicate_keys():
+    """Вебинары с одинаковой датой И временем — их различить невозможно."""
+    seen, dupes = set(), []
+    for w in WEBINARS:
+        k = webinar_key(w)
+        if k in seen and k not in dupes:
+            dupes.append(k)
+        seen.add(k)
+    return dupes
 
 
 # ============================================================================
@@ -428,7 +488,7 @@ REGISTRY_HEADER = "📋 СПИСОК ЗАРЕГИСТРИРОВАННЫХ (не 
 
 # дата вебинара -> множество id тех, кто на него записался
 registrations = {}
-reminded_dates = set()   # по каким вебинарам напоминание уже уходило
+reminded_keys = set()    # по каким вебинарам напоминание уже уходило
 registry_message_id = None
 
 # Удалось ли прочитать список при старте. Пока False — записывать НЕЛЬЗЯ:
@@ -444,8 +504,40 @@ CHARS_PER_REGISTRATION = 11   # ~10 цифр id плюс запятая
 
 warned_levels = set()        # на каких порогах уже предупреждали
 
-_DATE_LINE = re.compile(r"^(\d{2}\.\d{2}\.\d{4}):(.*)$")
+# Строка списка: "30.09.2026-1900:id,id" или старая "30.09.2026:id,id"
+_KEY_LINE = re.compile(r"^(\d{2}\.\d{2}\.\d{4}(?:-\d{1,4})?):(.*)$")
 _DATE_ONLY = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
+
+
+def migrate_key(key: str) -> str:
+    """Старая запись по одной дате -> ключ вебинара, если это однозначно.
+
+    Пока вебинар в дне был один, список хранился просто по дате. Если в этот
+    день вебинар по-прежнему один — переносим запись на него. Если их стало
+    несколько, угадывать НЕЛЬЗЯ: человек записывался тогда, когда второго
+    ещё не было, и определить какой именно он выбрал неоткуда. Такие записи
+    остаются как есть, а /stats показывает их отдельно, чтобы они не пропали
+    из виду.
+    """
+    if not _DATE_ONLY.match(key):
+        return key
+    same_day = webinars_on(key)
+    if len(same_day) == 1:
+        return webinar_key(same_day[0])
+    if len(same_day) > 1:
+        logger.error(
+            "Запись за %s осталась непривязанной: в этот день %s вебинара, "
+            "а старый формат не сохранял, на какой именно записался человек. "
+            "Посмотрите /stats и перезапишите их вручную.",
+            key, len(same_day),
+        )
+    return key
+
+
+def unassigned_keys():
+    """Записи по одной дате, которые не удалось привязать к вебинару."""
+    return sorted(k for k, ids in registrations.items()
+                  if ids and _DATE_ONLY.match(k) and len(webinars_on(k)) > 1)
 
 
 def all_subscribers() -> set:
@@ -458,12 +550,12 @@ def all_subscribers() -> set:
 
 def registry_text() -> str:
     lines = [REGISTRY_HEADER, f"Всего: {len(all_subscribers())}"]
-    for date_str in sorted(registrations,
-                           key=lambda d: parse_date(d) or datetime.date.max):
-        ids = registrations[date_str]
+    for key in sorted(registrations,
+                      key=lambda k: (key_date(k) or datetime.date.max, k)):
+        ids = registrations[key]
         if ids:
-            lines.append(f"{date_str}:" + ",".join(str(i) for i in sorted(ids)))
-    lines.append("SENT:" + ",".join(sorted(reminded_dates)))
+            lines.append(f"{key}:" + ",".join(str(i) for i in sorted(ids)))
+    lines.append("SENT:" + ",".join(sorted(reminded_keys)))
     if warned_levels:
         lines.append("WARN:" + ",".join(str(l) for l in sorted(warned_levels)))
     return "\n".join(lines)
@@ -485,12 +577,12 @@ def past_registration_dates(today: datetime.date = None):
     if today is None:
         today = today_local()
     found = []
-    for date_str, ids in registrations.items():
+    for key, ids in registrations.items():
         if not ids:
             continue
-        d = parse_date(date_str)
+        d = key_date(key)
         if d and d < today:
-            found.append((d, date_str, len(ids)))
+            found.append((d, key, len(ids)))
     found.sort(key=lambda item: item[0])
     return [(date_str, count) for _, date_str, count in found]
 
@@ -502,7 +594,7 @@ def cleanup_frees(past) -> int:
         ids = registrations.get(date_str, set())
         line = f"{date_str}:" + ",".join(str(i) for i in sorted(ids))
         freed += len(line) + 1                # +1 за перевод строки
-        if date_str in reminded_dates:
+        if date_str in reminded_keys:
             freed += len(date_str) + 1        # дата в строке SENT: плюс запятая
     return freed
 
@@ -557,7 +649,7 @@ def load_registry(bot) -> bool:
             if line.startswith("SENT:"):
                 for d in line[5:].split(","):
                     if d.strip():
-                        reminded_dates.add(d.strip())
+                        reminded_keys.add(migrate_key(d.strip()))
                 continue
 
             if line.startswith("WARN:"):
@@ -566,13 +658,13 @@ def load_registry(bot) -> bool:
                         warned_levels.add(int(lvl.strip()))
                 continue
 
-            match = _DATE_LINE.match(line)
+            match = _KEY_LINE.match(line)
             if match:
-                date_str, ids_part = match.group(1), match.group(2)
+                key, ids_part = match.group(1), match.group(2)
                 ids = {int(p) for p in (x.strip() for x in ids_part.split(","))
                        if p.isdigit()}
                 if ids:
-                    registrations.setdefault(date_str, set()).update(ids)
+                    registrations.setdefault(migrate_key(key), set()).update(ids)
                 continue
 
             # Старый формат: голая строка из id без даты. Регистрации тогда были
@@ -586,7 +678,7 @@ def load_registry(bot) -> bool:
         logger.info(
             "Загружено: вебинаров с записями %s, человек всего %s, "
             "отправленных напоминаний %s",
-            len(registrations), len(all_subscribers()), len(reminded_dates),
+            len(registrations), len(all_subscribers()), len(reminded_keys),
         )
         registry_loaded = True
         return True
@@ -751,30 +843,31 @@ def send_reminders(bot, today: datetime.date = None) -> int:
         webinar_date = parse_date(w["date"])
         if webinar_date is None or webinar_date != tomorrow:
             continue
-        if w["date"] in reminded_dates:
-            logger.info("Напоминание про %s уже отправляли", w["date"])
+        key = webinar_key(w)
+        if key in reminded_keys:
+            logger.info("Напоминание про %s уже отправляли", key)
             continue
 
-        recipients = registrations.get(w["date"], set())
+        recipients = registrations.get(key, set())
         if not recipients:
             # Намеренно НЕ помечаем как отправленное: иначе /stats покажет
             # "напоминание уже отправлено" там, где не ушло ничего, а тот, кто
             # запишется позже в тот же день, уже ничего не получит даже по
             # ручной команде /check.
             logger.info("На вебинар %s никто не записался — напоминать некому",
-                        w["date"])
+                        key)
             continue
 
-        text = TEXT_REMINDER.format(title=w["title"], time=w["time"])
+        text = TEXT_REMINDER.format(title=clean_title(w), time=w["time"])
         sent, failed = broadcast(bot, text, recipients)
-        reminded_dates.add(w["date"])
+        reminded_keys.add(key)
         save_registry(bot)
         total += sent
 
         logger.info("Напоминание про %s: доставлено %s, ошибок %s",
-                    w["date"], sent, failed)
+                    key, sent, failed)
         notify_group(bot, TEXT_GROUP_REMINDER_SENT.format(
-            date=w["date"], sent=sent, failed=failed,
+            date=f"{w['date']} в {w['time']}", sent=sent, failed=failed,
         ))
     return total
 
@@ -794,11 +887,15 @@ def start(update: Update, context: CallbackContext) -> None:
 
 
 def button_label(w) -> str:
-    """Короткая подпись на кнопке: дата и имя спикера."""
-    short = w["title"].split(":")[0].strip()
-    if len(short) > 30:
-        short = short[:29].rstrip() + "…"
-    return f"{w['date']} — {short}"
+    """Подпись на кнопке: дата, время и имя спикера.
+
+    Время обязательно — в один день вебинаров может быть несколько, и без
+    него кнопки выглядели бы одинаково.
+    """
+    short = clean_title(w).split(":")[0].strip()
+    if len(short) > 26:
+        short = short[:25].rstrip() + "…"
+    return f"{w['date']} {w['time']} — {short}"
 
 
 def register(update: Update, context: CallbackContext) -> None:
@@ -809,7 +906,7 @@ def register(update: Update, context: CallbackContext) -> None:
         return
 
     keyboard = [
-        [InlineKeyboardButton(button_label(w), callback_data=f"reg:{w['date']}")]
+        [InlineKeyboardButton(button_label(w), callback_data=f"reg:{webinar_key(w)}")]
         for w in upcoming
     ]
     update.message.reply_text(
@@ -824,35 +921,37 @@ def register_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     query.answer()   # без этого кнопка «крутится» у пользователя
 
-    date_str = query.data.partition(":")[2]
+    key = query.data.partition(":")[2]
     user = query.from_user
-    w = find_webinar(date_str)
-    webinar_date = parse_date(date_str) if w else None
+    w = find_webinar(key)
+    webinar_date = key_date(key) if w else None
 
     # Кнопку могли нажать на старом сообщении — вебинара может уже не быть
     if w is None or webinar_date is None or webinar_date < today_local():
         query.edit_message_text(TEXT_REGISTER_GONE, parse_mode='HTML')
         return
 
-    already = registrations.get(date_str, set())
+    already = registrations.get(key, set())
     if user.id in already:
         query.edit_message_text(TEXT_REGISTER_ALREADY, parse_mode='HTML')
         return
 
     # Сначала записываем и сохраняем, и только потом подтверждаем человеку —
     # иначе можно сказать «готово» там, где на самом деле ничего не сохранилось.
-    registrations.setdefault(date_str, set()).add(user.id)
+    registrations.setdefault(key, set()).add(user.id)
     if not save_registry(context.bot):
-        registrations[date_str].discard(user.id)
+        registrations[key].discard(user.id)
         query.edit_message_text(TEXT_REGISTER_FAILED, parse_mode='HTML')
         return
 
     query.edit_message_text(
-        TEXT_REGISTER_DONE.format(date=w["date"], time=w["time"], title=w["title"]),
+        TEXT_REGISTER_DONE.format(date=w["date"], time=w["time"],
+                                  title=clean_title(w)),
         parse_mode='HTML',
     )
     notify_group(context.bot, TEXT_GROUP_REGISTRATION.format(
-        date=date_str, user=user_link(user), username=user_handle(user),
+        date=f"{w['date']} в {w['time']}",
+        user=user_link(user), username=user_handle(user),
     ))
 
 
@@ -918,9 +1017,11 @@ def stats_command(update: Update, context: CallbackContext) -> None:
     for w in upcoming_webinars(today):
         d = parse_date(w["date"])
         days = (d - today).days
-        count = len(registrations.get(w["date"], set()))
-        mark = " (напоминание уже отправлено)" if w["date"] in reminded_dates else ""
-        lines.append(f"• {w['date']} — через {days} дн. — записано {count} чел.{mark}")
+        key = webinar_key(w)
+        count = len(registrations.get(key, set()))
+        mark = " (напоминание уже отправлено)" if key in reminded_keys else ""
+        lines.append(f"• {w['date']} в {w['time']} — через {days} дн. — "
+                     f"записано {count} чел.{mark}")
 
     text = f"Всего зарегистрировано: {len(all_subscribers())} чел.\n\n"
     text += "Ближайшие вебинары:\n" + ("\n".join(lines) if lines
@@ -933,6 +1034,18 @@ def stats_command(update: Update, context: CallbackContext) -> None:
                 else TEXT_STATS_CAPACITY)
     text += "\n\n" + template.format(percent=percent,
                                       left=capacity_left_phrase())
+
+    # Записи, которые не удалось привязать к конкретному вебинару, иначе бы
+    # они молча не получили напоминание.
+    stranded = unassigned_keys()
+    if stranded:
+        text += "\n\n" + TEXT_STATS_UNASSIGNED.format(items="\n".join(
+            f"• {k} — {records_phrase(len(registrations[k]))}" for k in stranded))
+
+    dupes = duplicate_keys()
+    if dupes:
+        text += "\n\n" + TEXT_STATS_DUPLICATES.format(items=", ".join(dupes))
+
     update.message.reply_text(text)
 
 
@@ -957,25 +1070,37 @@ def person_link(bot, user_id: int) -> str:
     return f'<a href="tg://user?id={user_id}">{html.escape(name)}</a>'
 
 
+def keys_for(wanted: str):
+    """Ключи вебинаров по дате (все в этот день) или по точному ключу."""
+    if find_webinar(wanted) and not _DATE_ONLY.match(wanted):
+        return [wanted]
+    keys = [webinar_key(w) for w in webinars_on(wanted)]
+    # запись из старого формата под самой датой — её тоже учитываем
+    if wanted in registrations and wanted not in keys:
+        keys.append(wanted)
+    return keys
+
+
 def who_command(update: Update, context: CallbackContext) -> None:
     """/who [ДД.ММ.ГГГГ] — свежий список записавшихся, по именам можно нажимать."""
     if not is_admin_chat(update):
         return
 
     wanted = update.message.text.partition(' ')[2].strip()
-    if wanted and not _DATE_ONLY.match(wanted):
-        update.message.reply_text(TEXT_WHO_NO_WEBINAR.format(date=wanted))
-        return
-
-    dates = [wanted] if wanted else sorted(
-        (d for d, ids in registrations.items() if ids),
-        key=lambda d: parse_date(d) or datetime.date.max,
-    )
-    if wanted and not registrations.get(wanted):
-        update.message.reply_text(
-            TEXT_WHO_NO_WEBINAR.format(date=wanted) if not find_webinar(wanted)
-            else TEXT_BROADCAST_EMPTY_ONE.format(date=wanted))
-        return
+    if wanted:
+        dates = keys_for(wanted)
+        if not dates:
+            update.message.reply_text(TEXT_WHO_NO_WEBINAR.format(date=wanted))
+            return
+        if not any(registrations.get(k) for k in dates):
+            update.message.reply_text(
+                TEXT_BROADCAST_EMPTY_ONE.format(date=wanted))
+            return
+    else:
+        dates = sorted(
+            (k for k, ids in registrations.items() if ids),
+            key=lambda k: (key_date(k) or datetime.date.max, k),
+        )
     if not dates:
         update.message.reply_text(TEXT_WHO_EMPTY)
         return
@@ -1072,16 +1197,16 @@ def cleanup_callback(update: Update, context: CallbackContext) -> None:
     before = capacity_percent()
     removed = sum(count for _, count in past)
     backup = {d: set(registrations[d]) for d, _ in past if d in registrations}
-    backup_sent = set(reminded_dates)
+    backup_sent = set(reminded_keys)
 
     for date_str, _ in past:
         registrations.pop(date_str, None)
-        reminded_dates.discard(date_str)
+        reminded_keys.discard(date_str)
 
     if not save_registry(context.bot):
         registrations.update(backup)
-        reminded_dates.clear()
-        reminded_dates.update(backup_sent)
+        reminded_keys.clear()
+        reminded_keys.update(backup_sent)
         query.edit_message_text(TEXT_CLEANUP_FAILED)
         return
 
@@ -1172,11 +1297,14 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
         return
 
     if date_str:
-        if not find_webinar(date_str) and date_str not in registrations:
+        keys = keys_for(date_str)
+        if not keys:
             update.message.reply_text(
                 TEXT_BROADCAST_NO_WEBINAR.format(date=date_str))
             return
-        recipients = set(registrations.get(date_str, set()))
+        recipients = set()
+        for key in keys:
+            recipients |= registrations.get(key, set())
         if not recipients:
             update.message.reply_text(
                 TEXT_BROADCAST_EMPTY_ONE.format(date=date_str))
@@ -1271,6 +1399,11 @@ def main() -> None:
         BotCommand("courses", "Все курсы и вебинары Tillo"),
         BotCommand("help", "Помощь"),
     ])
+
+    dupes = duplicate_keys()
+    if dupes:
+        logger.error("Вебинары с одинаковой датой и временем: %s — их нельзя "
+                     "различить, поменяйте время у одного из них", dupes)
 
     load_registry(updater.bot)
 
