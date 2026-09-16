@@ -41,18 +41,27 @@ ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "0"))
 # именно на этот вебинар.
 # ============================================================================
 
+# Каждый вебинар идёт дважды в один день: утром и вечером. Это два разных
+# вебинара — у каждого свой список записавшихся, своё напоминание и своя
+# ссылка на зум. Время в название писать НЕ нужно, бот показывает его сам.
 WEBINARS = [
-       {
+    {
         "date": "30.09.2026",
         "time": "11:00",
-        "title": "11-00 Черепанова Екатерина: 5 ошибок, из-за которых здоровое "
+        "title": "Черепанова Екатерина: 5 ошибок, из-за которых здоровое "
                  "питание не становится образом жизни",
     },
     {
         "date": "30.09.2026",
         "time": "19:00",
-        "title": "19-00 Черепанова Екатерина: 5 ошибок, из-за которых здоровое "
+        "title": "Черепанова Екатерина: 5 ошибок, из-за которых здоровое "
                  "питание не становится образом жизни",
+    },
+    {
+        "date": "19.10.2026",
+        "time": "11:00",
+        "title": "Галеева Ирина: Упадок сил, выгорание или гормональный сбой? "
+                 "Как понять, что происходит с организмом",
     },
     {
         "date": "19.10.2026",
@@ -62,19 +71,39 @@ WEBINARS = [
     },
     {
         "date": "30.10.2026",
+        "time": "11:00",
+        "title": "Крумкач Ольга: Гормоны и энергия или женское здоровье "
+                 "без мифов",
+    },
+    {
+        "date": "30.10.2026",
         "time": "19:00",
         "title": "Крумкач Ольга: Гормоны и энергия или женское здоровье "
                  "без мифов",
     },
 ]
 
-# Часовой пояс и время, в которое уходит напоминание накануне вебинара.
+# Часовой пояс и время, в которое уходят напоминания «за столько-то дней».
 # Пояс должен совпадать с поясом заданий на cron-job.org, которые будят сервис
 # перед этим временем — иначе сервис проснётся уже после отправки.
 TIMEZONE = pytz.timezone("Europe/Prague")
 TIMEZONE_LABEL = "Прага"
 REMINDER_HOUR = 12
 REMINDER_MINUTE = 0
+
+# За сколько дней до вебинара напоминать. Уберите лишние числа или добавьте
+# свои: [7, 1] — за неделю и накануне. Пустой список [] — не напоминать вовсе.
+# Все эти напоминания уходят в REMINDER_HOUR:REMINDER_MINUTE.
+REMINDER_DAYS = [5, 3, 2, 1]
+
+# Напоминать ли ещё и незадолго до начала.
+# ВАЖНО: это работает, только если сервис в этот момент не спит. Какие
+# будильники нужны на cron-job.org — показывает команда /stats.
+REMINDER_BEFORE_START = True
+
+# За сколько минут до начала отправлять это напоминание. Окно с запасом:
+# если сервис проснулся где-то внутри него, напоминание всё равно уйдёт.
+MINUTES_BEFORE_START = 75
 
 # ============================================================================
 # ТЕКСТЫ — меняйте только то, что внутри кавычек.
@@ -134,12 +163,17 @@ TEXT_UNKNOWN = (
     "Нажмите кнопку <b>Меню</b> слева от поля ввода, чтобы выбрать действие."
 )
 
-# Шаблон напоминания. {title} и {time} подставляются автоматически.
+# Шаблон напоминания. {when}, {title} и {time} подставляются автоматически.
 TEXT_REMINDER = (
-    "Привет! Напоминаем: уже <b>завтра</b> в {time} вебинар\n\n"
+    "Привет! Напоминаем: {when} в {time} вебинар\n\n"
     "<b>{title}</b>\n\n"
     "Ждём вас 🙂"
 )
+
+# Чем заменяется {when} — зависит от того, за сколько до вебинара напоминаем
+TEXT_WHEN_TOMORROW = "уже <b>завтра</b>"
+TEXT_WHEN_DAYS = "<b>через {days}</b>"      # «через 5 дней»
+TEXT_WHEN_SOON = "<b>уже совсем скоро</b>"
 
 # ---------------------------------------------------------------------------
 # Сообщения, которые бот пишет в рабочую группу (их видите только вы)
@@ -198,8 +232,19 @@ TEXT_BROADCAST_USAGE = (
     "Напишите текст после команды:\n\n"
     "<b>/broadcast</b> Привет! Вебинар уже завтра\n"
     "— всем, кто записан хоть на один вебинар\n\n"
-    "<b>/broadcast 30.09.2026</b> Привет! Вебинар уже завтра\n"
-    "— только тем, кто записан на этот вебинар"
+    "<b>/broadcast 30.09.2026 19:00</b> Ссылка на зум: https://...\n"
+    "— только тем, кто записан на этот вебинар. Так и надо слать ссылки: "
+    "у каждого вебинара она своя.\n\n"
+    "<b>/broadcast 30.09.2026</b> Привет!\n"
+    "— всем в этот день; если вебинаров в нём несколько, бот попросит "
+    "уточнить время."
+)
+
+TEXT_BROADCAST_PICK_TIME = (
+    "На {date} несколько вебинаров. Укажите время — иначе сообщение "
+    "(и ссылка на зум) уйдёт не тем:\n\n"
+    "{items}\n\n"
+    "Например:\n<code>/broadcast {example} Ссылка на зум: https://...</code>"
 )
 
 TEXT_BROADCAST_NO_WEBINAR = (
@@ -257,16 +302,18 @@ TEXT_ADMIN_HELP = (
     "🛠 <b>Команды в этой группе</b>\n\n"
 
     "<b>/stats</b> — <b>сколько</b>: человек на каждый вебинар, место в списке, "
-    "ушли ли напоминания.\n"
+    "какие напоминания уже ушли и когда уйдут следующие.\n"
     "<i>Когда нужно:</i> смотреть раз в день, пока идёт реклама.\n\n"
 
     "<b>/broadcast текст</b> — разослать сообщение всем, кто записан.\n"
     "<i>Пример:</i> /broadcast Завтра в 19:00 ждём вас на вебинаре!\n\n"
 
-    "<b>/broadcast ДД.ММ.ГГГГ текст</b> — разослать только тем, кто записан "
-    "на один конкретный вебинар.\n"
-    "<i>Пример:</i> /broadcast 30.09.2026 Завтра ждём вас на вебинаре "
-    "Екатерины!\n\n"
+    "<b>/broadcast ДД.ММ.ГГГГ ЧЧ:ММ текст</b> — разослать только тем, кто "
+    "записан на один конкретный вебинар. <b>Ссылки на зум шлите только так</b> "
+    "— у каждого вебинара ссылка своя.\n"
+    "<i>Пример:</i> /broadcast 30.09.2026 19:00 Ссылка на зум: https://...\n"
+    "Если в этот день вебинаров несколько, а время вы не указали, бот "
+    "переспросит и ничего не отправит.\n\n"
 
     "<b>/dm текст</b> — написать лично одному человеку. Сначала ответьте "
     "(reply) на сообщение «✅ Регистрация…» или «❓ Вопрос спикеру…», а потом "
@@ -276,7 +323,8 @@ TEXT_ADMIN_HELP = (
     "<b>/who</b> — <b>кто именно</b>: по карточке на каждого записавшегося, "
     "с именем, на которое можно нажать.\n"
     "<i>Когда нужно:</i> чтобы написать конкретному человеку — ответьте "
-    "командой /dm на его карточку. Можно указать дату: /who 30.09.2026\n\n"
+    "командой /dm на его карточку. Можно указать дату и время: "
+    "/who 30.09.2026 19:00\n\n"
 
     "<b>/cleanup</b> — освободить место в списке, убрав записи на прошедшие "
     "вебинары. Сначала покажет, что именно удалит, и спросит подтверждение.\n"
@@ -316,6 +364,15 @@ TEXT_STATS_CAPACITY = (
 TEXT_STATS_CAPACITY_WARN = (
     "⚠️ Список заполнен на {percent}% — осталось примерно {left}!"
 )
+
+TEXT_STATS_SCHEDULE = (
+    "<b>Когда уходят напоминания</b>\n"
+    "{days} — в {at} ({tz}){soon}\n"
+    "Чтобы всё это ушло, сервис должен не спать в: {wake}. "
+    "Это и есть список будильников на cron-job.org."
+)
+
+TEXT_STATS_SCHEDULE_SOON = "\nи ещё раз примерно за {minutes} минут до начала"
 
 # Записи из старого формата, которые не привязаны к вебинару
 TEXT_STATS_UNASSIGNED = (
@@ -396,6 +453,19 @@ def courses_text() -> str:
     return "\n".join(lines).strip()
 
 
+def parse_time(value):
+    """'19:00', '19.00', '1900' -> time(19, 0). None, если не разобрать."""
+    digits = re.sub(r"[^0-9]", "", str(value or ""))
+    if len(digits) == 3:
+        digits = "0" + digits
+    if len(digits) != 4:
+        return None
+    hour, minute = int(digits[:2]), int(digits[2:])
+    if hour > 23 or minute > 59:
+        return None
+    return datetime.time(hour, minute)
+
+
 def parse_date(value: str):
     """'30.09.2026' -> date. Возвращает None, если формат неверный."""
     try:
@@ -430,6 +500,17 @@ def webinar_key(w) -> str:
     и тот же ключ, а не три разных.
     """
     return f"{w['date']}-{re.sub(r'[^0-9]', '', str(w.get('time', '')))}"
+
+
+def key_label(key: str) -> str:
+    """Ключ в человеческом виде: '30.09.2026-1900' -> '30.09.2026 в 19:00'."""
+    w = find_webinar(key)
+    if w:
+        return f"{w['date']} в {w['time']}"
+    date_part, marker, time_part = key.partition("-")
+    if marker and len(time_part) == 4:
+        return f"{date_part} в {time_part[:2]}:{time_part[2:]}"
+    return key
 
 
 def key_date(key: str):
@@ -507,6 +588,17 @@ warned_levels = set()        # на каких порогах уже преду�
 # Строка списка: "30.09.2026-1900:id,id" или старая "30.09.2026:id,id"
 _KEY_LINE = re.compile(r"^(\d{2}\.\d{2}\.\d{4}(?:-\d{1,4})?):(.*)$")
 _DATE_ONLY = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
+
+
+def sent_tag(key: str, tag: str) -> str:
+    """Отметка «это напоминание уже уходило»: 30.09.2026-1900@d1."""
+    return f"{key}@{tag}"
+
+
+def migrate_sent(entry: str) -> str:
+    """Старая отметка без пометки — это было напоминание накануне."""
+    key, marker, tag = entry.partition("@")
+    return sent_tag(migrate_key(key), tag if marker else "d1")
 
 
 def migrate_key(key: str) -> str:
@@ -594,8 +686,9 @@ def cleanup_frees(past) -> int:
         ids = registrations.get(date_str, set())
         line = f"{date_str}:" + ",".join(str(i) for i in sorted(ids))
         freed += len(line) + 1                # +1 за перевод строки
-        if date_str in reminded_keys:
-            freed += len(date_str) + 1        # дата в строке SENT: плюс запятая
+        for entry in reminded_keys:
+            if entry.split("@", 1)[0] == date_str:
+                freed += len(entry) + 1       # отметка в строке SENT: плюс запятая
     return freed
 
 
@@ -649,7 +742,7 @@ def load_registry(bot) -> bool:
             if line.startswith("SENT:"):
                 for d in line[5:].split(","):
                     if d.strip():
-                        reminded_keys.add(migrate_key(d.strip()))
+                        reminded_keys.add(migrate_sent(d.strip()))
                 continue
 
             if line.startswith("WARN:"):
@@ -836,16 +929,21 @@ def send_reminders(bot, today: datetime.date = None) -> int:
     """Проверяет, есть ли вебинар завтра, и если да — рассылает напоминание."""
     if today is None:
         today = today_local()
-    tomorrow = today + datetime.timedelta(days=1)
 
     total = 0
     for w in WEBINARS:
         webinar_date = parse_date(w["date"])
-        if webinar_date is None or webinar_date != tomorrow:
+        if webinar_date is None:
             continue
+        days_left = (webinar_date - today).days
+        if days_left not in REMINDER_DAYS:
+            continue
+
         key = webinar_key(w)
-        if key in reminded_keys:
-            logger.info("Напоминание про %s уже отправляли", key)
+        tag = f"d{days_left}"
+        if sent_tag(key, tag) in reminded_keys:
+            logger.info("Напоминание про %s за %s дн. уже отправляли",
+                        key, days_left)
             continue
 
         recipients = registrations.get(key, set())
@@ -858,22 +956,109 @@ def send_reminders(bot, today: datetime.date = None) -> int:
                         key)
             continue
 
-        text = TEXT_REMINDER.format(title=clean_title(w), time=w["time"])
+        text = TEXT_REMINDER.format(when=when_phrase(days_left),
+                                    title=clean_title(w), time=w["time"])
         sent, failed = broadcast(bot, text, recipients)
-        reminded_keys.add(key)
+        reminded_keys.add(sent_tag(key, tag))
         save_registry(bot)
         total += sent
 
-        logger.info("Напоминание про %s: доставлено %s, ошибок %s",
+        logger.info("Напоминание про %s за %s дн.: доставлено %s, ошибок %s",
+                    key, days_left, sent, failed)
+        notify_group(bot, TEXT_GROUP_REMINDER_SENT.format(
+            date=f"{w['date']} в {w['time']} ({when_phrase(days_left)})",
+            sent=sent, failed=failed,
+        ))
+    return total
+
+
+def when_phrase(days_left: int) -> str:
+    """«завтра» / «через 5 дней» — в {when} шаблона напоминания."""
+    if days_left <= 1:
+        return TEXT_WHEN_TOMORROW
+    return TEXT_WHEN_DAYS.format(
+        days=f"{days_left} " + plural_ru(days_left, "день", "дня", "дней"))
+
+
+def send_start_reminders(bot, now: datetime.datetime = None) -> int:
+    """Напоминание незадолго до начала вебинара.
+
+    Проверяем окном, а не точной минутой: бесплатный сервис спит и может
+    проснуться в любой момент внутри окна — напоминание всё равно уйдёт,
+    и ровно один раз.
+    """
+    if now is None:
+        now = datetime.datetime.now(TIMEZONE)
+
+    total = 0
+    for w in WEBINARS:
+        webinar_date = parse_date(w["date"])
+        start_time = parse_time(w.get("time"))
+        if webinar_date is None or start_time is None:
+            continue
+
+        start = TIMEZONE.localize(
+            datetime.datetime.combine(webinar_date, start_time))
+        minutes_left = (start - now).total_seconds() / 60
+        if not 0 < minutes_left <= MINUTES_BEFORE_START:
+            continue
+
+        key = webinar_key(w)
+        if sent_tag(key, "soon") in reminded_keys:
+            continue
+
+        recipients = registrations.get(key, set())
+        if not recipients:
+            logger.info("На вебинар %s никто не записался — напоминать некому",
+                        key)
+            continue
+
+        text = TEXT_REMINDER.format(when=TEXT_WHEN_SOON,
+                                    title=clean_title(w), time=w["time"])
+        sent, failed = broadcast(bot, text, recipients)
+        reminded_keys.add(sent_tag(key, "soon"))
+        save_registry(bot)
+        total += sent
+
+        logger.info("Напоминание перед началом %s: доставлено %s, ошибок %s",
                     key, sent, failed)
         notify_group(bot, TEXT_GROUP_REMINDER_SENT.format(
-            date=f"{w['date']} в {w['time']}", sent=sent, failed=failed,
+            date=f"{w['date']} в {w['time']} (перед началом)",
+            sent=sent, failed=failed,
         ))
     return total
 
 
 def daily_job(context: CallbackContext) -> None:
     send_reminders(context.bot)
+
+
+def soon_job(context: CallbackContext) -> None:
+    """Пока сервис не спит, каждые несколько минут проверяем, не начинается ли
+    вебинар совсем скоро. Так напоминание уйдёт, даже если сервис проснулся
+    не ровно в нужную минуту."""
+    if REMINDER_BEFORE_START:
+        send_start_reminders(context.bot)
+
+
+def wakeup_times():
+    """Во сколько сервис обязан не спать, чтобы напоминания ушли.
+
+    Это и есть список будильников для cron-job.org: время напоминаний «за
+    столько-то дней» плюс по одному перед началом каждого вебинара.
+    """
+    needed = set()
+    if REMINDER_DAYS:
+        needed.add(f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}")
+    if REMINDER_BEFORE_START:
+        for w in WEBINARS:
+            start = parse_time(w.get("time"))
+            if start is None:
+                continue
+            moment = (datetime.datetime.combine(datetime.date(2000, 1, 1), start)
+                      - datetime.timedelta(minutes=MINUTES_BEFORE_START + 10))
+            needed.add(moment.strftime("%H:%M"))
+    return sorted(needed)
 
 
 # ============================================================================
@@ -1019,15 +1204,25 @@ def stats_command(update: Update, context: CallbackContext) -> None:
         days = (d - today).days
         key = webinar_key(w)
         count = len(registrations.get(key, set()))
-        mark = " (напоминание уже отправлено)" if key in reminded_keys else ""
+        done = sorted(e.split("@", 1)[1] for e in reminded_keys
+                      if e.split("@", 1)[0] == key)
+        mark = f" (напоминаний отправлено: {len(done)})" if done else ""
         lines.append(f"• {w['date']} в {w['time']} — через {days} дн. — "
                      f"записано {count} чел.{mark}")
 
     text = f"Всего зарегистрировано: {len(all_subscribers())} чел.\n\n"
     text += "Ближайшие вебинары:\n" + ("\n".join(lines) if lines
                                        else "— расписание пустое")
-    text += f"\n\nНапоминания уходят в {REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d} " \
-            f"накануне ({TIMEZONE_LABEL})."
+    text += "\n\n" + TEXT_STATS_SCHEDULE.format(
+        days=(", ".join(f"за {d} " + plural_ru(d, "день", "дня", "дней")
+                        for d in sorted(REMINDER_DAYS, reverse=True))
+              or "— не настроены"),
+        at=f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}",
+        tz=TIMEZONE_LABEL,
+        soon=(TEXT_STATS_SCHEDULE_SOON.format(minutes=MINUTES_BEFORE_START)
+              if REMINDER_BEFORE_START else ""),
+        wake=", ".join(wakeup_times()) or "—",
+    )
 
     percent = capacity_percent()
     template = (TEXT_STATS_CAPACITY_WARN if percent >= CAPACITY_WARN_LEVELS[0]
@@ -1040,13 +1235,15 @@ def stats_command(update: Update, context: CallbackContext) -> None:
     stranded = unassigned_keys()
     if stranded:
         text += "\n\n" + TEXT_STATS_UNASSIGNED.format(items="\n".join(
-            f"• {k} — {records_phrase(len(registrations[k]))}" for k in stranded))
+            f"• {key_label(k)} — {records_phrase(len(registrations[k]))}"
+            for k in stranded))
 
     dupes = duplicate_keys()
     if dupes:
-        text += "\n\n" + TEXT_STATS_DUPLICATES.format(items=", ".join(dupes))
+        text += "\n\n" + TEXT_STATS_DUPLICATES.format(
+            items=", ".join(key_label(k) for k in dupes))
 
-    update.message.reply_text(text)
+    update.message.reply_text(text, parse_mode='HTML')
 
 
 _name_cache = {}
@@ -1070,6 +1267,24 @@ def person_link(bot, user_id: int) -> str:
     return f'<a href="tg://user?id={user_id}">{html.escape(name)}</a>'
 
 
+_TIME_ONLY = re.compile(r"^\d{1,2}[:.]\d{2}$")
+
+
+def split_target(text: str):
+    """'30.09.2026 19:00 текст' -> ('30.09.2026', '19:00', 'текст').
+
+    Дата и время необязательны; что не распознали — остаётся текстом.
+    """
+    date_str = time_str = ""
+    first, _, tail = text.partition(' ')
+    if _DATE_ONLY.match(first):
+        date_str, text = first, tail.strip()
+        second, _, tail2 = text.partition(' ')
+        if _TIME_ONLY.match(second):
+            time_str, text = second, tail2.strip()
+    return date_str, time_str, text
+
+
 def keys_for(wanted: str):
     """Ключи вебинаров по дате (все в этот день) или по точному ключу."""
     if find_webinar(wanted) and not _DATE_ONLY.match(wanted):
@@ -1086,7 +1301,9 @@ def who_command(update: Update, context: CallbackContext) -> None:
     if not is_admin_chat(update):
         return
 
-    wanted = update.message.text.partition(' ')[2].strip()
+    w_date, w_time, _extra = split_target(
+        update.message.text.partition(' ')[2].strip())
+    wanted = f"{w_date}-{re.sub(r'[^0-9]', '', w_time)}" if w_time else w_date
     if wanted:
         dates = keys_for(wanted)
         if not dates:
@@ -1129,9 +1346,9 @@ def who_command(update: Update, context: CallbackContext) -> None:
             update.message.reply_text(
                 TEXT_WHO_CARD.format(
                     user=person_link(context.bot, uid),
-                    dates=", ".join(sorted(
+                    dates=", ".join(key_label(k) for k in sorted(
                         on_dates[uid],
-                        key=lambda d: parse_date(d) or datetime.date.max)),
+                        key=lambda k: (key_date(k) or datetime.date.max, k))),
                 ),
                 parse_mode='HTML', disable_web_page_preview=True)
         except TelegramError as e:
@@ -1155,7 +1372,7 @@ def cleanup_command(update: Update, context: CallbackContext) -> None:
         update.message.reply_text(TEXT_CLEANUP_NOTHING)
         return
 
-    items = "\n".join(f"• {date_str} — {records_phrase(count)}"
+    items = "\n".join(f"• {key_label(date_str)} — {records_phrase(count)}"
                       for date_str, count in past)
     before = capacity_percent()
     after = max(0, round((len(registry_text()) - cleanup_frees(past)) * 100
@@ -1201,7 +1418,9 @@ def cleanup_callback(update: Update, context: CallbackContext) -> None:
 
     for date_str, _ in past:
         registrations.pop(date_str, None)
-        reminded_keys.discard(date_str)
+        for entry in [e for e in reminded_keys
+                      if e.split("@", 1)[0] == date_str]:
+            reminded_keys.discard(entry)
 
     if not save_registry(context.bot):
         registrations.update(backup)
@@ -1283,25 +1502,44 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
     if not is_admin_chat(update):
         return
 
-    rest = update.message.text.partition(' ')[2].strip()
-
-    # Первым словом можно указать дату — тогда рассылка уйдёт только тем,
-    # кто записан именно на этот вебинар.
-    date_str = ""
-    first, _, tail = rest.partition(' ')
-    if _DATE_ONLY.match(first):
-        date_str, rest = first, tail.strip()
+    # Первыми словами можно указать дату и время — тогда рассылка уйдёт
+    # только тем, кто записан именно на этот вебинар.
+    date_str, time_str, rest = split_target(
+        update.message.text.partition(' ')[2].strip())
 
     if not rest:
         update.message.reply_text(TEXT_BROADCAST_USAGE, parse_mode='HTML')
         return
 
     if date_str:
-        keys = keys_for(date_str)
-        if not keys:
+        same_day = webinars_on(date_str)
+        if time_str:
+            key = f"{date_str}-{re.sub(r'[^0-9]', '', time_str)}"
+            if not find_webinar(key) and key not in registrations:
+                update.message.reply_text(TEXT_BROADCAST_NO_WEBINAR.format(
+                    date=f"{date_str} в {time_str}"))
+                return
+            keys = [key]
+        elif len(same_day) > 1:
+            # В рассылке почти всегда ссылка на зум, а она у каждого вебинара
+            # своя. Угадывать нельзя — просим уточнить время.
             update.message.reply_text(
-                TEXT_BROADCAST_NO_WEBINAR.format(date=date_str))
+                TEXT_BROADCAST_PICK_TIME.format(
+                    date=date_str,
+                    items="\n".join(
+                        f"• <code>/broadcast {date_str} {w['time']}</code> — "
+                        f"записано "
+                        f"{len(registrations.get(webinar_key(w), set()))} чел."
+                        for w in same_day),
+                    example=f"{date_str} {same_day[0]['time']}",
+                ), parse_mode='HTML')
             return
+        else:
+            keys = keys_for(date_str)
+            if not keys:
+                update.message.reply_text(
+                    TEXT_BROADCAST_NO_WEBINAR.format(date=date_str))
+                return
         recipients = set()
         for key in keys:
             recipients |= registrations.get(key, set())
@@ -1310,7 +1548,8 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
                 TEXT_BROADCAST_EMPTY_ONE.format(date=date_str))
             return
         update.message.reply_text(TEXT_BROADCAST_START_ONE.format(
-            date=date_str, count=len(recipients)))
+            date=f"{date_str} в {time_str}" if time_str else date_str,
+            count=len(recipients)))
     else:
         recipients = all_subscribers()
         if not recipients:
@@ -1328,6 +1567,8 @@ def check_command(update: Update, context: CallbackContext) -> None:
     if not is_admin_chat(update):
         return
     total = send_reminders(context.bot)
+    if REMINDER_BEFORE_START:
+        total += send_start_reminders(context.bot)
     if total == 0:
         update.message.reply_text(
             "Проверила: на завтра вебинаров нет (или напоминание уже отправлено)."
