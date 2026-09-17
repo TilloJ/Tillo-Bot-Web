@@ -627,9 +627,27 @@ def migrate_key(key: str) -> str:
 
 
 def unassigned_keys():
-    """Записи по одной дате, которые не удалось привязать к вебинару."""
-    return sorted(k for k, ids in registrations.items()
-                  if ids and _DATE_ONLY.match(k) and len(webinars_on(k)) > 1)
+    """Кто из старых записей по одной дате остался без вебинара.
+
+    Возвращает {дата: множество id}. Тех, кто уже записался на конкретный
+    вебинар в этот же день, НЕ считаем: напоминание они получат, и жаловаться
+    на них незачем — иначе предупреждение остаётся висеть после того, как люди
+    перезаписались.
+    """
+    stranded = {}
+    for key, ids in registrations.items():
+        if not ids or not _DATE_ONLY.match(key):
+            continue
+        same_day = webinars_on(key)
+        if len(same_day) <= 1:
+            continue
+        covered = set()
+        for w in same_day:
+            covered |= registrations.get(webinar_key(w), set())
+        left = ids - covered
+        if left:
+            stranded[key] = left
+    return stranded
 
 
 def all_subscribers() -> set:
@@ -1239,8 +1257,8 @@ def stats_command(update: Update, context: CallbackContext) -> None:
     stranded = unassigned_keys()
     if stranded:
         text += "\n\n" + TEXT_STATS_UNASSIGNED.format(items="\n".join(
-            f"• {key_label(k)} — {records_phrase(len(registrations[k]))}"
-            for k in stranded))
+            f"• {key_label(k)} — {records_phrase(len(stranded[k]))}"
+            for k in sorted(stranded)))
 
     dupes = duplicate_keys()
     if dupes:
