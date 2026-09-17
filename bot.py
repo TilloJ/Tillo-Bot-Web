@@ -367,12 +367,18 @@ TEXT_STATS_CAPACITY_WARN = (
 
 TEXT_STATS_SCHEDULE = (
     "<b>Когда уходят напоминания</b>\n"
-    "{days} — в {at} ({tz}){soon}\n"
-    "Чтобы всё это ушло, сервис должен не спать в: {wake}. "
-    "Это и есть список будильников на cron-job.org."
+    "{days}{soon}\n"
+    "{wake}"
 )
 
+TEXT_STATS_SCHEDULE_DAYS = "{list} — в {at} ({tz})"
+TEXT_STATS_SCHEDULE_NO_DAYS = "напоминания за несколько дней выключены"
 TEXT_STATS_SCHEDULE_SOON = "\nи ещё раз примерно за {minutes} минут до начала"
+TEXT_STATS_SCHEDULE_WAKE = (
+    "Чтобы всё это ушло, сервис должен не спать в: {times}. "
+    "Это и есть список будильников на cron-job.org."
+)
+TEXT_STATS_SCHEDULE_NO_WAKE = "Напоминания выключены — будильники не нужны."
 
 # Записи из старого формата, которые не привязаны к вебинару
 TEXT_STATS_UNASSIGNED = (
@@ -626,6 +632,38 @@ def migrate_key(key: str) -> str:
     return key
 
 
+def prune_resolved() -> int:
+    """Убирает из старой записи «по дате» тех, кто уже перезаписался на
+    конкретный вебинар в этот же день.
+
+    Иначе человек навсегда остаётся сразу в двух строках: и в старой без
+    времени, и в новой с временем. Старая строка так постепенно тает и в
+    конце концов исчезает совсем, освобождая место в списке.
+
+    Перезапись на вебинар в ДРУГОЙ день не считается: на этот день человек
+    по-прежнему непонятно куда записан.
+    """
+    removed = 0
+    for key in list(registrations):
+        if not _DATE_ONLY.match(key):
+            continue
+        same_day = webinars_on(key)
+        if len(same_day) <= 1:
+            continue
+        covered = set()
+        for w in same_day:
+            covered |= registrations.get(webinar_key(w), set())
+        resolved = registrations[key] & covered
+        if resolved:
+            registrations[key] -= resolved
+            removed += len(resolved)
+            logger.info("Убрано из непривязанных %s: %s чел. (перезаписались)",
+                        key, len(resolved))
+        if not registrations[key]:
+            del registrations[key]
+    return removed
+
+
 def unassigned_keys():
     """Кто из старых записей по одной дате остался без вебинара.
 
@@ -818,6 +856,9 @@ def save_registry(bot) -> bool:
         if not load_registry(bot):
             logger.error("Список по-прежнему недоступен — НИЧЕГО не пишу")
             return False
+
+    # Кто перезаписался — того в старой строке «по дате» держать незачем
+    prune_resolved()
 
     # Пороги, которые пройдены впервые. Считаем ДО записи, чтобы отметка
     # "предупреждали" сохранилась тем же самым сообщением, а не следующим.
@@ -1235,15 +1276,17 @@ def stats_command(update: Update, context: CallbackContext) -> None:
     text = f"Всего зарегистрировано: {len(all_subscribers())} чел.\n\n"
     text += "Ближайшие вебинары:\n" + ("\n".join(lines) if lines
                                        else "— расписание пустое")
+    times = wakeup_times()
     text += "\n\n" + TEXT_STATS_SCHEDULE.format(
-        days=(", ".join(f"за {d} " + plural_ru(d, "день", "дня", "дней")
-                        for d in sorted(REMINDER_DAYS, reverse=True))
-              or "— не настроены"),
-        at=f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}",
-        tz=TIMEZONE_LABEL,
+        days=(TEXT_STATS_SCHEDULE_DAYS.format(
+                  list=", ".join(f"за {d} " + plural_ru(d, "день", "дня", "дней")
+                                 for d in sorted(REMINDER_DAYS, reverse=True)),
+                  at=f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}", tz=TIMEZONE_LABEL)
+              if REMINDER_DAYS else TEXT_STATS_SCHEDULE_NO_DAYS),
         soon=(TEXT_STATS_SCHEDULE_SOON.format(minutes=MINUTES_BEFORE_START)
               if REMINDER_BEFORE_START else ""),
-        wake=", ".join(wakeup_times()) or "—",
+        wake=(TEXT_STATS_SCHEDULE_WAKE.format(times=", ".join(times))
+              if times else TEXT_STATS_SCHEDULE_NO_WAKE),
     )
 
     percent = capacity_percent()
