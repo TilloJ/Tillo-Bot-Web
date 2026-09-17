@@ -270,6 +270,16 @@ TEXT_BROADCAST_DONE = "Готово. Доставлено: {sent}. Не дост
 
 TEXT_WHO_EMPTY = "Пока никто не записан."
 
+# Ответ на /check, когда рассылать нечего
+TEXT_CHECK_NOTHING = (
+    "Проверила: напоминаний на сегодня нет (или они уже отправлены)."
+)
+
+TEXT_CHECK_CLEANED = (
+    "\nЗаодно прибрала список: {count} — уже перезаписались на конкретный "
+    "вебинар, из старой записи «по дате» их убрала."
+)
+
 # /who отвечает на вопрос «кто», а не «сколько» — считает /stats.
 TEXT_WHO_HEADER = (
     "👥 <b>Карточки записавшихся{scope}</b>\n"
@@ -1634,10 +1644,18 @@ def check_command(update: Update, context: CallbackContext) -> None:
     total = send_reminders(context.bot)
     if REMINDER_BEFORE_START:
         total += send_start_reminders(context.bot)
+
+    # Заодно приборка: send_reminders() сохраняет список только когда реально
+    # что-то отправил, поэтому без этого /check не чистит старые записи.
+    cleaned = prune_resolved()
+    if cleaned:
+        save_registry(context.bot)
+
     if total == 0:
-        update.message.reply_text(
-            "Проверила: на завтра вебинаров нет (или напоминание уже отправлено)."
-        )
+        text = TEXT_CHECK_NOTHING
+        if cleaned:
+            text += TEXT_CHECK_CLEANED.format(count=records_phrase(cleaned))
+        update.message.reply_text(text)
 
 
 # ============================================================================
@@ -1725,7 +1743,10 @@ def main() -> None:
         logger.error("Вебинары с одинаковой датой и временем: %s — их нельзя "
                      "различить, поменяйте время у одного из них", dupes)
 
-    load_registry(updater.bot)
+    if load_registry(updater.bot) and prune_resolved():
+        # На холодном старте подчищаем старые записи тех, кто уже перезаписался.
+        # Сервис просыпается часто, поэтому список приходит в порядок сам.
+        save_registry(updater.bot)
 
     # Ежедневная проверка: не начинается ли вебинар завтра
     updater.job_queue.run_daily(
