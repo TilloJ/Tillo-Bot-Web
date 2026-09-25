@@ -424,12 +424,6 @@ TEXT_ADMIN_HELP = (
     "/who 30.09.2026 19:00. Карточки идут по 15; число в конце — номер "
     "страницы: /who 30.09.2026 19:00 2\n\n"
 
-    "<b>/cleanup</b> — убрать из списка записи на прошедшие вебинары. Сначала "
-    "покажет, что именно удалит, и спросит подтверждение. Эти люди перестанут "
-    "получать /broadcast.\n"
-    "<i>Когда нужно:</i> почти никогда — места в списке хватает всегда, это "
-    "только для порядка.\n\n"
-
     "<b>/check</b> — проверить вручную, не пора ли отправить напоминание.\n"
     "<i>Когда нужно:</i> обычно никогда — бот делает это сам в 12:00 "
     "накануне вебинара.\n\n"
@@ -483,33 +477,6 @@ TEXT_STATS_UNASSIGNED = (
 TEXT_STATS_DUPLICATES = (
     "⚠️ Вебинары с одинаковой датой и временем: {items}\n"
     "Их невозможно различить — поменяйте время у одного из них."
-)
-
-# ---------------------------------------------------------------------------
-# Очистка списка от прошедших вебинаров (/cleanup)
-# ---------------------------------------------------------------------------
-
-TEXT_CLEANUP_NOTHING = "Чистить нечего: записей на прошедшие вебинары нет."
-
-TEXT_CLEANUP_PREVIEW = (
-    "🧹 Удалить записи на прошедшие вебинары:\n\n"
-    "{items}\n\n"
-    "Всего {removed}.\n\n"
-    "⚠️ Обычно этого делать НЕ нужно. Эти записи уже лежат на листе «Архив» "
-    "в registry.xlsx и ничему не мешают. Удаление сотрёт их и оттуда: этих "
-    "людей не останется ни в файле, ни в рассылке /broadcast — восстановить "
-    "будет неоткуда."
-)
-
-TEXT_CLEANUP_BTN_YES = "Удалить"
-TEXT_CLEANUP_BTN_NO = "Отмена"
-
-TEXT_CLEANUP_DONE = "🧹 Готово, убрано {removed}."
-
-TEXT_CLEANUP_CANCELLED = "Отменено, ничего не удалено."
-
-TEXT_CLEANUP_FAILED = (
-    "Не получилось сохранить изменения — список остался как был."
 )
 
 TEXT_GROUP_REMINDER_SENT = (
@@ -750,6 +717,10 @@ CSV_DELIMITER = ";"
 # В каком виде был файл при последнем чтении: "xlsx", "csv", "text" или None.
 # Если не в xlsx — бот перепишет его сразу после запуска.
 registry_file_format = None
+# В закреплённом сообщении ещё лежит копия списка (так было до 25.09 18:16).
+# Новый код её не пишет, поэтому при старте перезаписываем сообщение сами —
+# иначе оно так и провисит со старым текстом до первой регистрации.
+pin_needs_rewrite = False
 # Имя и @username каждого, кто записался: id -> (имя, username).
 people = {}
 # Когда человек записался на вебинар: (ключ вебинара, id) -> '2026-09-25 17:24'
@@ -897,21 +868,6 @@ def registry_text(snap=None) -> str:
     return "\n".join(lines)
 
 
-def past_registration_dates(today: datetime.date = None):
-    """Даты в списке, которые уже прошли: [(дата, сколько записей)]."""
-    if today is None:
-        today = today_local()
-    found = []
-    for key, ids in registrations.items():
-        if not ids:
-            continue
-        d = key_date(key)
-        if d and d < today:
-            found.append((d, key, len(ids)))
-    found.sort(key=lambda item: item[0])
-    return [(date_str, count) for _, date_str, count in found]
-
-
 def plural_ru(number: int, one: str, few: str, many: str) -> str:
     """Русские числительные: 1 регистрацию, 2 регистрации, 5 регистраций."""
     if number % 100 in (11, 12, 13, 14):
@@ -1039,7 +995,7 @@ def registry_xlsx(snap, today: datetime.date = None) -> bytes:
     «Записи» — на вебинары, которые ещё впереди; «Архив» — на прошедшие.
     Переезд на «Архив» происходит сам, когда вебинар прошёл, и НИЧЕГО не
     удаляет: для бота оба листа — один и тот же список, и /broadcast по-
-    прежнему доходит до всех. Удалить кого-то может только /cleanup.
+    прежнему доходит до всех, и никто не пропадает.
     """
     if today is None:
         today = today_local()
@@ -1154,9 +1110,11 @@ def backfill_names(bot) -> None:
         time.sleep(0.1)
     if missing:
         logger.info("Имена: узнали %s из %s", found, len(missing))
-    # Сохраняем, если узнали новые имена или файл ещё в старом виде (CSV,
-    # текст) — тогда он сразу станет registry.xlsx, не дожидаясь регистрации.
-    if found or (file_pointer and registry_file_format != "xlsx"):
+    # Сохраняем, если узнали новые имена, или файл ещё в старом виде (CSV,
+    # текст), или в закреплённом сообщении осталась копия списка. Всё это
+    # приводится в порядок сразу при старте, не дожидаясь регистрации.
+    if found or pin_needs_rewrite or (file_pointer
+                                      and registry_file_format != "xlsx"):
         save_registry(bot)
 
 
@@ -1169,7 +1127,7 @@ def load_registry(bot) -> bool:
     пока группа была недоступна, переживает повторное чтение перед записью.
     """
     global registry_message_id, registry_loaded, file_pointer, prev_pointer
-    global _read_failures, registry_file_format
+    global _read_failures, registry_file_format, pin_needs_rewrite
 
     if not ADMIN_CHAT_ID:
         logger.error(
@@ -1193,6 +1151,8 @@ def load_registry(bot) -> bool:
 
     registry_message_id = pinned.message_id
     regs, sent, warn, pointers, total = parse_registry(pinned.text)
+    # Список прямо в сообщении рядом со ссылкой на файл — это старый вид
+    pin_needs_rewrite = bool(regs) and "FILE" in pointers
 
     if "FILE" not in pointers and total and not regs:
         # Раньше список лежал в самом сообщении. Если ни списка в нём, ни
@@ -1323,6 +1283,7 @@ def save_registry(bot) -> bool:
 
 def _save_registry(bot) -> bool:
     global registry_message_id, file_pointer, prev_pointer, registry_file_format
+    global pin_needs_rewrite
 
     if not ADMIN_CHAT_ID:
         # Режим без группы (локальный запуск): сохранять негде, но и падать
@@ -1395,6 +1356,7 @@ def _save_registry(bot) -> bool:
     if old_prev and DELETE_OLD_REGISTRY_FILES:
         delete_quietly(bot, old_prev[0])
     registry_file_format = "xlsx"
+    pin_needs_rewrite = False      # сообщение только что переписано начисто
     return True
 
 
@@ -2131,74 +2093,6 @@ def records_phrase(count: int) -> str:
     return f"{count} " + plural_ru(count, "запись", "записи", "записей")
 
 
-def cleanup_command(update: Update, context: CallbackContext) -> None:
-    """/cleanup — показать записи на прошедшие вебинары и предложить их убрать."""
-    if not is_admin_chat(update):
-        return
-
-    past = past_registration_dates()
-    if not past:
-        update.message.reply_text(TEXT_CLEANUP_NOTHING)
-        return
-
-    items = "\n".join(f"• {key_label(date_str)} — {records_phrase(count)}"
-                      for date_str, count in past)
-    keyboard = [[
-        InlineKeyboardButton(TEXT_CLEANUP_BTN_YES, callback_data="cleanup:yes"),
-        InlineKeyboardButton(TEXT_CLEANUP_BTN_NO, callback_data="cleanup:no"),
-    ]]
-    update.message.reply_text(
-        TEXT_CLEANUP_PREVIEW.format(
-            items=items,
-            removed=records_phrase(sum(c for _, c in past)),
-        ),
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-
-
-def cleanup_callback(update: Update, context: CallbackContext) -> None:
-    """Кнопки под /cleanup. Работают только внутри рабочей группы."""
-    query = update.callback_query
-    query.answer()
-
-    if not (ADMIN_CHAT_ID and query.message
-            and query.message.chat.id == ADMIN_CHAT_ID):
-        return
-
-    if query.data == "cleanup:no":
-        query.edit_message_text(TEXT_CLEANUP_CANCELLED)
-        return
-
-    # Пересчитываем на момент нажатия: между показом и нажатием мог
-    # смениться день.
-    past = past_registration_dates()
-    if not past:
-        query.edit_message_text(TEXT_CLEANUP_NOTHING)
-        return
-
-    removed = sum(count for _, count in past)
-    backup = {d: set(registrations[d]) for d, _ in past if d in registrations}
-    backup_sent = set(reminded_keys)
-
-    for date_str, _ in past:
-        registrations.pop(date_str, None)
-        for entry in [e for e in reminded_keys
-                      if e.split("@", 1)[0] == date_str]:
-            reminded_keys.discard(entry)
-
-    if not save_registry(context.bot):
-        registrations.update(backup)
-        reminded_keys.clear()
-        reminded_keys.update(backup_sent)
-        query.edit_message_text(TEXT_CLEANUP_FAILED)
-        return
-
-    logger.info("Очистка: убрано %s записей за %s прошедших вебинаров",
-                removed, len(past))
-    query.edit_message_text(TEXT_CLEANUP_DONE.format(
-        removed=records_phrase(removed)))
-
-
 def replied_user_ids(message):
     """Все id людей, упомянутых в сообщении, на которое ответили.
 
@@ -2414,13 +2308,9 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler('stats', stats_command))
     dispatcher.add_handler(CommandHandler('broadcast', broadcast_command))
     dispatcher.add_handler(CommandHandler('check', check_command))
-    dispatcher.add_handler(CommandHandler('cleanup', cleanup_command))
     dispatcher.add_handler(CommandHandler('dm', dm_command))
     dispatcher.add_handler(CommandHandler('who', who_command))
     dispatcher.add_handler(CallbackQueryHandler(register_callback, pattern=r'^reg:'))
-    dispatcher.add_handler(
-        CallbackQueryHandler(cleanup_callback, pattern=r'^cleanup:')
-    )
     dispatcher.add_handler(
         MessageHandler(Filters.text & ~Filters.command, handle_message)
     )
