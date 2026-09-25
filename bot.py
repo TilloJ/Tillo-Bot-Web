@@ -1,8 +1,10 @@
 import datetime
 import html
+import io
 import logging
 import os
 import re
+import threading
 import time
 
 import pytz
@@ -23,7 +25,7 @@ from telegram.ext import (
     CallbackContext,
 )
 from telegram.ext.utils import webhookhandler as _webhookhandler
-from telegram.error import TelegramError, Unauthorized, BadRequest
+from telegram.error import TelegramError, Unauthorized, BadRequest, RetryAfter
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -529,6 +531,23 @@ TEXT_GROUP_REMINDER_TEMPLATE_BROKEN = (
     "{{other_times}}, а в TEXT_REMINDER_OTHER_TIMES — {{date}} и {{times}}."
 )
 
+# Список записавшихся хранится в файле registry.txt в этой группе.
+# Подпись к этому файлу:
+TEXT_REGISTRY_FILE_CAPTION = (
+    "📋 Список записавшихся — служебный файл бота. Не удаляйте его."
+)
+
+# Строка в закреплённом сообщении, когда сам список в него уже не помещается
+TEXT_REGISTRY_IN_FILE = (
+    "Сам список — в файле registry.txt, последнем от бота. Бот читает его сам."
+)
+
+# Бот не может прочитать файл со списком. {error} — что пошло не так.
+TEXT_GROUP_REGISTRY_UNREADABLE = (
+    "⚠️ Не могу прочитать файл со списком записавшихся: {error}\n"
+    "Пока это так, новые регистрации НЕ сохраняются. Напишите разработчику."
+)
+
 # Телеграм не понял HTML-разметку в тексте напоминания, и оно ушло тем же
 # текстом без форматирования. {error} — что именно ему не понравилось.
 TEXT_GROUP_REMINDER_MARKUP_BROKEN = (
@@ -698,8 +717,9 @@ def duplicate_keys():
 # ============================================================================
 # ХРАНИЛИЩЕ ПОДПИСЧИКОВ
 # Бесплатный Render стирает память при перезапуске, поэтому список тех, кто
-# записался, хранится в закреплённом сообщении внутри рабочей группы.
-# Формат: по строке на каждый вебинар — "ДД.ММ.ГГГГ:id,id,id".
+# записался, хранится в самой рабочей группе: в файле registry.txt, на который
+# указывает закреплённое сообщение (строка FILE:). Формат списка: по строке на
+# каждый вебинар — "ДД.ММ.ГГГГ-ЧЧММ:id,id,id", плюс SENT: и WARN:.
 # ============================================================================
 
 REGISTRY_HEADER = "📋 СПИСОК ЗАРЕГИСТРИРОВАННЫХ (не удалять, не редактировать)"
@@ -713,14 +733,34 @@ registry_message_id = None
 # пустая память затрёт закреплённое сообщение со всеми регистрациями.
 registry_loaded = False
 
-# Закреплённое сообщение вмещает 4096 символов. Когда список упрётся в этот
-# предел, новые регистрации перестанут сохраняться, поэтому бот предупреждает
-# в группе заранее — на 80% и на 95% заполнения.
-REGISTRY_LIMIT = 4096
+# Файл бот может скачать, пока он не больше 20 МБ, — это предел списка.
+# (Раньше список жил в самом закреплённом сообщении, и пределом были его
+# 4096 символов.) Предупреждения на 80% и 95% остались, но при таком
+# пределе не сработают.
+REGISTRY_LIMIT = 20 * 1024 * 1024
 CAPACITY_WARN_LEVELS = (80, 95)
 CHARS_PER_REGISTRATION = 11   # ~10 цифр id плюс запятая
 
 warned_levels = set()        # на каких порогах уже предупреждали
+
+REGISTRY_FILENAME = "registry.txt"
+# Пока список помещается в закреплённое сообщение, он лежит и там — рядом с
+# указателем на файл. Это страховка на случай отката на старую версию бота:
+# та умеет читать только само закреплённое сообщение. Запас — на эмодзи и
+# строки FILE:/PREV:.
+PIN_LIMIT = 4096 - 200
+# Сообщение с файлом текущего списка и предыдущего: (message_id, file_id).
+file_pointer = None
+prev_pointer = None
+# Удалять ли в группе файлы старше предыдущего. Выключено, пока не проверено,
+# что file_id остаётся рабочим и после удаления сообщения с файлом.
+DELETE_OLD_REGISTRY_FILES = False
+# Сохранения идут по одному: напоминания рассылаются в своём потоке, и два
+# сохранения сразу могли бы записать в файл и в сообщение разное.
+_save_lock = threading.Lock()
+_read_failures = 0           # сколько раз подряд не удалось прочитать файл
+
+_POINTER_LINE = re.compile(r"^(FILE|PREV):(\d+):(\S+)$")
 
 # Строка списка: "30.09.2026-1900:id,id" или старая "30.09.2026:id,id"
 _KEY_LINE = re.compile(r"^(\d{2}\.\d{2}\.\d{4}(?:-\d{1,4})?):(.*)$")
@@ -898,13 +938,73 @@ def capacity_left_phrase() -> str:
                                   "регистраций")
 
 
+def parse_registry(text: str):
+    """Разбирает текст списка — из закреплённого сообщения или из файла.
+
+    Возвращает (записи, отметки SENT, пороги WARN, указатели, «Всего»).
+    Память не трогает: это делает load_registry, дополняя, а не заменяя.
+    """
+    regs, sent, warn, pointers, total = {}, set(), set(), {}, None
+    # Разбираем по признаку строки, а не по её номеру: так порядок строк
+    # и появление новых вебинаров ничего не ломают.
+    for line in text.split("\n")[1:]:
+        line = line.strip()
+        if line.startswith("Всего:"):
+            digits = line[len("Всего:"):].strip()
+            total = int(digits) if digits.isdigit() else None
+            continue
+
+        pointer = _POINTER_LINE.match(line)
+        if pointer:
+            pointers[pointer.group(1)] = (int(pointer.group(2)), pointer.group(3))
+            continue
+
+        if line.startswith("SENT:"):
+            for d in line[5:].split(","):
+                if d.strip():
+                    sent.add(migrate_sent(d.strip()))
+            continue
+
+        if line.startswith("WARN:"):
+            for lvl in line[5:].split(","):
+                if lvl.strip().isdigit():
+                    warn.add(int(lvl.strip()))
+            continue
+
+        match = _KEY_LINE.match(line)
+        if match:
+            key, ids_part = match.group(1), match.group(2)
+            ids = {int(p) for p in (x.strip() for x in ids_part.split(","))
+                   if p.isdigit()}
+            if ids:
+                regs.setdefault(migrate_key(key), set()).update(ids)
+            continue
+
+        # Старый формат: голая строка из id без даты. Регистрации тогда были
+        # общими, а не по вебинарам, поэтому переносить их некуда.
+        if line and line.replace(",", "").isdigit():
+            logger.warning(
+                "В списке найдена строка в старом формате (без дат) — она "
+                "пропущена: %s", line[:80],
+            )
+    return regs, sent, warn, pointers, total
+
+
+def download_registry(bot, file_id: str) -> str:
+    """Скачивает файл списка из группы."""
+    return bytes(bot.get_file(file_id).download_as_bytearray()).decode("utf-8")
+
+
 def load_registry(bot) -> bool:
-    """Читает список подписчиков из закреплённого сообщения в группе.
+    """Читает список записавшихся: закреплённое сообщение и файл, на который оно указывает.
 
     True — прочитали (в том числе «списка ещё нет, он пустой»).
-    False — не смогли достучаться до группы; писать в этом состоянии нельзя.
+    False — не смогли; писать в этом состоянии нельзя.
+    Прочитанное ДОПОЛНЯЕТ память, а не заменяет её: так регистрация, принятая,
+    пока группа была недоступна, переживает повторное чтение перед записью.
     """
-    global registry_message_id, registry_loaded
+    global registry_message_id, registry_loaded, file_pointer, prev_pointer
+    global _read_failures
 
     if not ADMIN_CHAT_ID:
         logger.error(
@@ -915,62 +1015,115 @@ def load_registry(bot) -> bool:
 
     try:
         chat = bot.get_chat(ADMIN_CHAT_ID)
-        pinned = chat.pinned_message
-        if not (pinned and pinned.text and pinned.text.startswith(REGISTRY_HEADER)):
-            logger.info("Закреплённого списка нет — будет создан при первой регистрации")
-            registry_loaded = True
-            return True
-
-        registry_message_id = pinned.message_id
-        # Разбираем по признаку строки, а не по её номеру: так порядок строк
-        # и появление новых вебинаров ничего не ломают.
-        for line in pinned.text.split("\n")[1:]:
-            line = line.strip()
-            if line.startswith("SENT:"):
-                for d in line[5:].split(","):
-                    if d.strip():
-                        reminded_keys.add(migrate_sent(d.strip()))
-                continue
-
-            if line.startswith("WARN:"):
-                for lvl in line[5:].split(","):
-                    if lvl.strip().isdigit():
-                        warned_levels.add(int(lvl.strip()))
-                continue
-
-            match = _KEY_LINE.match(line)
-            if match:
-                key, ids_part = match.group(1), match.group(2)
-                ids = {int(p) for p in (x.strip() for x in ids_part.split(","))
-                       if p.isdigit()}
-                if ids:
-                    registrations.setdefault(migrate_key(key), set()).update(ids)
-                continue
-
-            # Старый формат: голая строка из id без даты. Регистрации тогда были
-            # общими, а не по вебинарам, поэтому переносить их некуда.
-            if line and line.replace(",", "").isdigit():
-                logger.warning(
-                    "В закреплённом сообщении найден список в старом формате "
-                    "(без дат) — он пропущен: %s", line[:80],
-                )
-
-        logger.info(
-            "Загружено: вебинаров с записями %s, человек всего %s, "
-            "отправленных напоминаний %s",
-            len(registrations), len(all_subscribers()), len(reminded_keys),
-        )
-        registry_loaded = True
-        return True
     except TelegramError as e:
         registry_loaded = False
         logger.error("Не удалось прочитать список подписчиков: %s", e)
         return False
 
+    pinned = chat.pinned_message
+    if not (pinned and pinned.text and pinned.text.startswith(REGISTRY_HEADER)):
+        logger.info("Закреплённого списка нет — будет создан при первой регистрации")
+        registry_loaded = True
+        return True
+
+    registry_message_id = pinned.message_id
+    regs, sent, warn, pointers, total = parse_registry(pinned.text)
+
+    if "FILE" in pointers:
+        # Список — в файле, и верим именно файлу. Копия в самом сообщении
+        # (если она ещё помещается) — только для отката на старую версию.
+        try:
+            regs, sent, warn, _, _ = parse_registry(
+                download_registry(bot, pointers["FILE"][1]))
+            people = len(set().union(*regs.values())) if regs else 0
+            # «Всего» записано в сообщение тем же сохранением, что и файл.
+            # Файл, оборвавшийся на границе строки, разбирается без ошибок,
+            # но людей в нём меньше — такой файл прочитанным не считаем.
+            if total is not None and people != total:
+                raise ValueError(f"в файле {people} чел., а в закреплённом "
+                                 f"сообщении — {total}")
+        except (TelegramError, ValueError, UnicodeDecodeError) as e:
+            registry_loaded = False
+            _read_failures += 1
+            logger.error("Не удалось прочитать файл списка: %s", e)
+            # Один сбой на холодном старте обычно проходит сам при следующей
+            # записи — в группу пишем, только если не вышло и во второй раз.
+            if _read_failures == 2:
+                notify_group(bot, TEXT_GROUP_REGISTRY_UNREADABLE.format(
+                    error=html.escape(str(e))))
+            return False
+        file_pointer = pointers["FILE"]
+        prev_pointer = pointers.get("PREV")
+
+    for key, ids in regs.items():
+        registrations.setdefault(key, set()).update(ids)
+    reminded_keys.update(sent)
+    warned_levels.update(warn)
+    _read_failures = 0
+
+    logger.info(
+        "Загружено (%s): вебинаров с записями %s, человек всего %s, "
+        "отправленных напоминаний %s",
+        "из файла" if file_pointer else "из закреплённого сообщения",
+        len(registrations), len(all_subscribers()), len(reminded_keys),
+    )
+    registry_loaded = True
+    return True
+
+
+def pin_text(text: str) -> str:
+    """Закреплённое сообщение: указатель на файл и, пока влезает, сам список.
+
+    text — тот же снимок списка, что ушёл в файл, чтобы «Всего» в сообщении
+    и файл никогда не расходились.
+    """
+    pointer = []
+    if file_pointer:
+        pointer.append(f"FILE:{file_pointer[0]}:{file_pointer[1]}")
+    if prev_pointer:
+        pointer.append(f"PREV:{prev_pointer[0]}:{prev_pointer[1]}")
+    full = "\n".join([text] + pointer)
+    if len(full) <= PIN_LIMIT:
+        return full
+    total_line = next(l for l in text.split("\n") if l.startswith("Всего:"))
+    return "\n".join([REGISTRY_HEADER, total_line, TEXT_REGISTRY_IN_FILE] + pointer)
+
+
+def with_retry(call):
+    """Вызов к Телеграму с одним повтором, если он просит подождать недолго.
+
+    В группу нельзя слать больше ~20 сообщений в минуту, а каждое сохранение
+    теперь — это ещё и файл. Короткую паузу переждём, длинную — нет.
+    """
+    try:
+        return call()
+    except RetryAfter as e:
+        if e.retry_after > 15:
+            raise
+        logger.warning("Телеграм просит подождать %s с — жду и повторяю",
+                       e.retry_after)
+        time.sleep(e.retry_after + 1)
+        return call()
+
+
+def delete_quietly(bot, message_id: int) -> None:
+    """Удаляет старый файл списка; не вышло — не беда, он просто останется."""
+    try:
+        bot.delete_message(chat_id=ADMIN_CHAT_ID, message_id=message_id)
+    except TelegramError as e:
+        logger.info("Не удалось удалить старый файл списка %s: %s",
+                    message_id, e)
+
 
 def save_registry(bot) -> bool:
-    """Обновляет закреплённое сообщение. True — сохранено (или сохранять некуда)."""
-    global registry_message_id
+    """Сохраняет список: новый файл в группе, потом указатель на него в
+    закреплённом сообщении. True — сохранено (или сохранять некуда)."""
+    with _save_lock:
+        return _save_registry(bot)
+
+
+def _save_registry(bot) -> bool:
+    global registry_message_id, file_pointer, prev_pointer
 
     if not ADMIN_CHAT_ID:
         # Режим без группы (локальный запуск): сохранять негде, но и падать
@@ -999,15 +1152,39 @@ def save_registry(bot) -> bool:
                if l not in warned_levels and percent >= l]
     warned_levels.update(pending)
 
+    # Один снимок на всё сохранение: он же уходит в файл, он же — в сообщение
+    text = registry_text()
+
+    # 1. Сначала новый файл. Не загрузился — ничего не поменялось.
+    try:
+        doc = with_retry(lambda: bot.send_document(
+            chat_id=ADMIN_CHAT_ID,
+            document=io.BytesIO(text.encode("utf-8")),
+            filename=REGISTRY_FILENAME,
+            caption=TEXT_REGISTRY_FILE_CAPTION,
+            disable_notification=True,
+        ))
+    except TelegramError as e:
+        warned_levels.difference_update(pending)
+        logger.error("Не удалось загрузить файл списка: %s", e)
+        return False
+
+    # 2. Потом указатель на него. Не обновился — сообщение по-прежнему
+    #    указывает на старый файл, а новый просто лежит лишним. Удалять его
+    #    нельзя: при обрыве связи правка могла и пройти.
+    old_file, old_prev = file_pointer, prev_pointer
+    file_pointer = (doc.message_id, doc.document.file_id)
+    prev_pointer = old_file
     try:
         if registry_message_id:
-            bot.edit_message_text(
+            with_retry(lambda: bot.edit_message_text(
                 chat_id=ADMIN_CHAT_ID,
                 message_id=registry_message_id,
-                text=registry_text(),
-            )
+                text=pin_text(text),
+            ))
         else:
-            msg = bot.send_message(chat_id=ADMIN_CHAT_ID, text=registry_text())
+            msg = with_retry(lambda: bot.send_message(
+                chat_id=ADMIN_CHAT_ID, text=pin_text(text)))
             registry_message_id = msg.message_id
             bot.pin_chat_message(
                 chat_id=ADMIN_CHAT_ID,
@@ -1015,10 +1192,14 @@ def save_registry(bot) -> bool:
                 disable_notification=True,
             )
     except TelegramError as e:
-        # Не сохранилось — значит и про предупреждение отмечать нечего
+        file_pointer, prev_pointer = old_file, old_prev
         warned_levels.difference_update(pending)
         logger.error("Не удалось сохранить список подписчиков: %s", e)
         return False
+
+    # 3. Файл старше предыдущего больше нигде не упомянут
+    if old_prev and DELETE_OLD_REGISTRY_FILES:
+        delete_quietly(bot, old_prev[0])
 
     for level in pending:
         logger.warning("Список заполнен на %s%% — предупреждаю группу", percent)
