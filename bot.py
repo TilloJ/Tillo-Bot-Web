@@ -529,6 +529,23 @@ TEXT_GROUP_REMINDER_TEMPLATE_BROKEN = (
     "{{other_times}}, а в TEXT_REMINDER_OTHER_TIMES — {{date}} и {{times}}."
 )
 
+# Телеграм не понял HTML-разметку в тексте напоминания, и оно ушло тем же
+# текстом без форматирования. {error} — что именно ему не понравилось.
+TEXT_GROUP_REMINDER_MARKUP_BROKEN = (
+    "⚠️ Телеграм не принял разметку в тексте напоминания: {error}\n"
+    "Напоминание всё равно ушло — тем же текстом, только без жирного шрифта. "
+    "Проверьте теги в TEXT_REMINDER и TEXT_REMINDER_OTHER_TIMES в bot.py: "
+    "каждый &lt;b&gt; должен закрываться &lt;/b&gt;, а знаки &lt;, &gt; и "
+    "&amp; вне тегов писать нельзя."
+)
+
+# Напоминание не дошло ни до кого. Отправленным оно НЕ считается.
+TEXT_GROUP_REMINDER_NOT_SENT = (
+    "⚠️ Напоминание про вебинар {date} не дошло ни до кого "
+    "(ошибок: {failed}). Отправленным оно не считается — повторить можно "
+    "командой /check."
+)
+
 
 def courses_text() -> str:
     """Собирает список курсов из расписания выше, чтобы не дублировать вручную.
@@ -1067,12 +1084,48 @@ def is_permanent_failure(error) -> bool:
     return False
 
 
-def broadcast(bot, text: str, recipients):
-    """Рассылает текст указанным людям. Возвращает (доставлено, ошибок)."""
+# Тег HTML: <b>, </b>, <a href="...">. «<3» или «< 5» тегом не считаются.
+_HTML_TAG = re.compile(r"</?[a-zA-Z][^<>]*>")
+_HTML_LINK = re.compile(
+    r"""<a\s[^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>""", re.S | re.I)
+
+
+def is_markup_error(error) -> bool:
+    """Телеграм не понял HTML-разметку самого текста (у всех она одна)."""
+    return (isinstance(error, BadRequest)
+            and "can't parse entities" in str(error).lower())
+
+
+def plain_text(text: str) -> str:
+    """Тот же текст без разметки: '<b>x</b> &amp; <a href="u">y</a>' -> 'x & y (u)'."""
+    text = _HTML_LINK.sub(lambda m: f"{m.group(2)} ({m.group(1)})", text)
+    return html.unescape(_HTML_TAG.sub("", text))
+
+
+def broadcast(bot, text: str, recipients, markup_fallback: bool = False):
+    """Рассылает текст указанным людям.
+
+    Возвращает (доставлено, ошибок, ошибка разметки или None).
+    markup_fallback — для напоминаний, которые уходят без человека рядом: если
+    Телеграм не понял HTML-разметку, тот же текст уходит всем без неё. В
+    /broadcast этого нет: там ошибку сразу видит тот, кто отправлял.
+    """
     sent, failed, gone = 0, 0, []
+    parse_mode, markup_error = 'HTML', None
     for user_id in sorted(recipients):
         try:
-            bot.send_message(chat_id=user_id, text=text, parse_mode='HTML')
+            try:
+                bot.send_message(chat_id=user_id, text=text,
+                                 parse_mode=parse_mode)
+            except BadRequest as e:
+                if not (markup_fallback and parse_mode and is_markup_error(e)):
+                    raise
+                # Разметка сломана в самом тексте — значит, у всех. Этому
+                # человеку ещё раз, остальным сразу без разметки.
+                logger.error("Телеграм не понял разметку: %s — отправляю "
+                             "без форматирования", e)
+                markup_error, text, parse_mode = e, plain_text(text), None
+                bot.send_message(chat_id=user_id, text=text, parse_mode=None)
             sent += 1
         except TelegramError as e:
             failed += 1
@@ -1090,7 +1143,7 @@ def broadcast(bot, text: str, recipients):
             for user_id in gone:
                 ids.discard(user_id)
         save_registry(bot)
-    return sent, failed
+    return sent, failed, markup_error
 
 
 # ============================================================================
@@ -1152,6 +1205,27 @@ def reminder_text(w, when: str, other_times: bool):
             when=when, time=w["time"], title=clean_title(w)), e
 
 
+def warn_markup(bot, error) -> None:
+    """Сообщает в группу, что Телеграм не понял разметку напоминания."""
+    notify_group(bot, TEXT_GROUP_REMINDER_MARKUP_BROKEN.format(
+        error=html.escape(str(error))))
+
+
+# О каком напоминании уже написали «не дошло ни до кого». Напоминание «перед
+# началом» проверяется каждые 5 минут — без этого группа получала бы по
+# сообщению на каждую неудачную попытку.
+_reported_not_sent = set()
+
+
+def report_not_sent(bot, tag: str, label: str, failed: int) -> None:
+    """Одно сообщение в группу на напоминание, которое не дошло ни до кого."""
+    if tag in _reported_not_sent:
+        return
+    _reported_not_sent.add(tag)
+    notify_group(bot, TEXT_GROUP_REMINDER_NOT_SENT.format(
+        date=label, failed=failed))
+
+
 def warn_template(bot, error) -> None:
     """Сообщает в группу, что в шаблоне напоминания ошибка."""
     notify_group(bot, TEXT_GROUP_REMINDER_TEMPLATE_BROKEN.format(
@@ -1164,7 +1238,7 @@ def send_reminders(bot, today: datetime.date = None) -> int:
         today = today_local()
 
     total = 0
-    warned = False   # о сломанном шаблоне — одно сообщение за раз
+    warned = set()   # о какой поломке шаблона уже написали в группу
     for w in WEBINARS:
         webinar_date = parse_date(w["date"])
         if webinar_date is None:
@@ -1192,20 +1266,27 @@ def send_reminders(bot, today: datetime.date = None) -> int:
 
         text, template_error = reminder_text(
             w, when_phrase(days_left), other_times=True)
-        if template_error and not warned:
+        if template_error and "braces" not in warned:
             warn_template(bot, template_error)
-            warned = True
-        sent, failed = broadcast(bot, text, recipients)
-        reminded_keys.add(sent_tag(key, tag))
-        save_registry(bot)
+            warned.add("braces")
+        sent, failed, markup_error = broadcast(bot, text, recipients,
+                                               markup_fallback=True)
+        if markup_error and "markup" not in warned:
+            warn_markup(bot, markup_error)
+            warned.add("markup")
         total += sent
 
         logger.info("Напоминание про %s за %s дн.: доставлено %s, ошибок %s",
                     key, days_left, sent, failed)
+        label = f"{w['date']} в {w['time']} ({when_phrase(days_left)})"
+        if not sent:
+            # Не дошло ни до кого — не отмечаем, чтобы /check мог повторить.
+            report_not_sent(bot, sent_tag(key, tag), label, failed)
+            continue
+        reminded_keys.add(sent_tag(key, tag))
+        save_registry(bot)
         notify_group(bot, TEXT_GROUP_REMINDER_SENT.format(
-            date=f"{w['date']} в {w['time']} ({when_phrase(days_left)})",
-            sent=sent, failed=failed,
-        ))
+            date=label, sent=sent, failed=failed))
     return total
 
 
@@ -1228,7 +1309,7 @@ def send_start_reminders(bot, now: datetime.datetime = None) -> int:
         now = datetime.datetime.now(TIMEZONE)
 
     total = 0
-    warned = False   # о сломанном шаблоне — одно сообщение за раз
+    warned = set()   # о какой поломке шаблона уже написали в группу
     for w in WEBINARS:
         # Начало — по WEBINAR_TIMEZONE, now — по TIMEZONE: разность двух
         # точных моментов от поясов не зависит.
@@ -1251,20 +1332,28 @@ def send_start_reminders(bot, now: datetime.datetime = None) -> int:
 
         text, template_error = reminder_text(
             w, TEXT_WHEN_SOON, other_times=False)
-        if template_error and not warned:
+        if template_error and "braces" not in warned:
             warn_template(bot, template_error)
-            warned = True
-        sent, failed = broadcast(bot, text, recipients)
-        reminded_keys.add(sent_tag(key, "soon"))
-        save_registry(bot)
+            warned.add("braces")
+        sent, failed, markup_error = broadcast(bot, text, recipients,
+                                               markup_fallback=True)
+        if markup_error and "markup" not in warned:
+            warn_markup(bot, markup_error)
+            warned.add("markup")
         total += sent
 
         logger.info("Напоминание перед началом %s: доставлено %s, ошибок %s",
                     key, sent, failed)
+        label = f"{w['date']} в {w['time']} (перед началом)"
+        if not sent:
+            # Не дошло ни до кого — не отмечаем: через 5 минут бот попробует
+            # снова, пока не начался вебинар.
+            report_not_sent(bot, sent_tag(key, "soon"), label, failed)
+            continue
+        reminded_keys.add(sent_tag(key, "soon"))
+        save_registry(bot)
         notify_group(bot, TEXT_GROUP_REMINDER_SENT.format(
-            date=f"{w['date']} в {w['time']} (перед началом)",
-            sent=sent, failed=failed,
-        ))
+            date=label, sent=sent, failed=failed))
     return total
 
 
@@ -1877,7 +1966,7 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
         update.message.reply_text(TEXT_BROADCAST_START_ALL.format(
             count=len(recipients)))
 
-    sent, failed = broadcast(context.bot, rest, recipients)
+    sent, failed, _ = broadcast(context.bot, rest, recipients)
     update.message.reply_text(TEXT_BROADCAST_DONE.format(sent=sent, failed=failed))
 
 
