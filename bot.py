@@ -36,9 +36,9 @@ ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "0"))
 
 # ============================================================================
 # РАСПИСАНИЕ ВЕБИНАРОВ
-# Добавляйте и меняйте строки здесь. Дата строго в формате ДД.ММ.ГГГГ.
-# За день до каждой даты бот сам разошлёт напоминание тем, кто записался
-# именно на этот вебинар.
+# Добавляйте и меняйте строки здесь. Дата строго в формате ДД.ММ.ГГГГ,
+# время — ЧЧ:ММ по МОСКВЕ (пояс задан ниже, в WEBINAR_TIMEZONE).
+# Напоминания тем, кто записался именно на этот вебинар, бот разошлёт сам.
 # ============================================================================
 
 # Каждый вебинар идёт дважды в один день: утром и вечером. Это два разных
@@ -90,6 +90,14 @@ TIMEZONE = pytz.timezone("Europe/Prague")
 TIMEZONE_LABEL = "Прага"
 REMINDER_HOUR = 12
 REMINDER_MINUTE = 0
+
+# В каком поясе записано время вебинаров в WEBINARS. От него считается
+# напоминание «перед началом». Это НЕ то же, что TIMEZONE выше: тот задаёт,
+# когда уходят напоминания «за N дней», и должен совпадать с будильниками.
+# В Москве нет перехода на зимнее время, а в Праге есть, поэтому разница
+# между ними — час летом и два часа зимой. Бот учитывает это сам.
+WEBINAR_TIMEZONE = pytz.timezone("Europe/Moscow")
+WEBINAR_TIMEZONE_LABEL = "МСК"
 
 # За сколько дней до вебинара напоминать. Уберите лишние числа или добавьте
 # свои: [7, 1] — за неделю и накануне. Пустой список [] — не напоминать вовсе.
@@ -163,15 +171,52 @@ TEXT_UNKNOWN = (
     "Нажмите кнопку <b>Меню</b> слева от поля ввода, чтобы выбрать действие."
 )
 
-# Шаблон напоминания. {when}, {title} и {time} подставляются автоматически.
+# Шаблон напоминания — один на все вебинары. Бот сам подставляет:
+#   {when}        «через 5 дней», «уже завтра» или «уже совсем скоро»
+#   {time}        время вебинара, {title} — его название
+#   {speaker}     имя спикера — часть названия до первого двоеточия
+#                 («Черепанова Екатерина»). Пишите так, чтобы имя стояло
+#                 в начальной форме: «{speaker} ответит», а не «для {speaker}».
+#   {other_times} абзац TEXT_REMINDER_OTHER_TIMES (он ниже) — или ничего
+# В фигурных скобках — только эти слова. Если там ошибка, напоминание всё
+# равно уйдёт, в упрощённом виде, а бот напишет об ошибке в группу.
 TEXT_REMINDER = (
     "Привет! Напоминаем: {when} в {time} вебинар\n\n"
     "<b>{title}</b>\n\n"
-    "Ждём вас 🙂\n\n"
-    "Напоминаем, что вебинар 30 сентября пройдет в 11:00 или 19:00 по московскому времени. Это будет один и тот же вебинар — два времени для вашего удобства.\n\n"
-    "Если вы хотите прийти в другое время — просто зайдите в меню бота и зарегистрируйтесь еще раз.\n\n"
-    "А еще мы через бот собираем вопросы для Екатерины, на которые она ответит на вебинаре. Есть вопрос - бегите в меню бота, жмите 'Вопросы для спикера' и присылайте свой вопрос."
+    "Ждём вас 🙂"
+    "{other_times}\n\n"
+    "А еще мы через бот собираем вопросы — {speaker} ответит на них на "
+    "вебинаре. Есть вопрос - бегите в меню бота, жмите 'Вопросы для спикера' "
+    "и присылайте свой вопрос."
 )
+
+# Встаёт на место {other_times}, только если в этот день несколько сеансов,
+# и только в напоминаниях «за N дней» — в «скоро» его нет: другой сеанс
+# к тому времени может уже пройти. {date} — «30 сентября»,
+# {times} — «11:00 или 19:00».
+TEXT_REMINDER_OTHER_TIMES = (
+    "\n\nНапоминаем, что вебинар {date} пройдет в {times} по московскому "
+    "времени. Это один и тот же вебинар, просто в разное время — для вашего "
+    "удобства.\n\n"
+    "Если вы хотите прийти в другое время — просто зайдите в меню бота и "
+    "зарегистрируйтесь еще раз."
+)
+
+# Что встанет на место {speaker}, если в названии нет двоеточия
+TEXT_SPEAKER_FALLBACK = "спикер"
+
+# Запасной текст: уходит, если в TEXT_REMINDER ошибка в фигурных скобках.
+# Здесь можно использовать только {when}, {time} и {title}.
+TEXT_REMINDER_FALLBACK = (
+    "Привет! Напоминаем: {when} в {time} вебинар\n\n"
+    "<b>{title}</b>\n\n"
+    "Ждём вас 🙂"
+)
+
+# Месяцы для {date}: «30 сентября»
+MONTHS_GENITIVE = ("января", "февраля", "марта", "апреля", "мая", "июня",
+                   "июля", "августа", "сентября", "октября", "ноября",
+                   "декабря")
 
 # Чем заменяется {when} — зависит от того, за сколько до вебинара напоминаем
 TEXT_WHEN_TOMORROW = "уже <b>завтра</b>"
@@ -384,8 +429,8 @@ TEXT_ADMIN_HELP = (
 
     "<b>Как добавить вебинар</b>\n"
     "Вебинары и все тексты бота лежат в файле bot.py в самом верху. "
-    "Дата строго в формате ДД.ММ.ГГГГ. Напоминание уходит само за день до "
-    "вебинара — записывать его отдельно не нужно."
+    "Дата строго в формате ДД.ММ.ГГГГ, время — по Москве. Напоминания "
+    "уходят сами — записывать их отдельно не нужно."
 )
 
 # {percent} — число, {left} — уже готовая фраза вида "53 регистрации"
@@ -412,9 +457,12 @@ TEXT_STATS_SCHEDULE = (
 
 TEXT_STATS_SCHEDULE_DAYS = "{list} — в {at} ({tz})"
 TEXT_STATS_SCHEDULE_NO_DAYS = "напоминания за несколько дней выключены"
-TEXT_STATS_SCHEDULE_SOON = "\nи ещё раз примерно за {minutes} минут до начала"
+TEXT_STATS_SCHEDULE_SOON = (
+    "\nи ещё раз примерно за {minutes} минут до начала "
+    "(время вебинаров — {wtz})"
+)
 TEXT_STATS_SCHEDULE_WAKE = (
-    "Чтобы всё это ушло, сервис должен не спать в: {times}. "
+    "Чтобы всё это ушло, сервис должен не спать в: {times} ({tz}). "
     "Это и есть список будильников, которые его будят."
 )
 TEXT_STATS_SCHEDULE_NO_WAKE = "Напоминания выключены — будильники не нужны."
@@ -462,6 +510,15 @@ TEXT_CLEANUP_FAILED = (
 TEXT_GROUP_REMINDER_SENT = (
     "🔔 Отправлено напоминание про вебинар {date}.\n"
     "Доставлено: {sent}, не доставлено: {failed}."
+)
+
+# В тексте напоминания ошибка в фигурных скобках. {error} — что бот не понял.
+TEXT_GROUP_REMINDER_TEMPLATE_BROKEN = (
+    "⚠️ В тексте напоминания ошибка в фигурных скобках: {error}\n"
+    "Напоминание всё равно ушло, но в упрощённом виде. Поправьте "
+    "TEXT_REMINDER или TEXT_REMINDER_OTHER_TIMES в bot.py: в скобках можно "
+    "писать только {{when}}, {{time}}, {{title}}, {{speaker}} и "
+    "{{other_times}}, а в TEXT_REMINDER_OTHER_TIMES — {{date}} и {{times}}."
 )
 
 
@@ -535,6 +592,16 @@ def upcoming_webinars(today: datetime.date = None):
             found.append((d, w))
     found.sort(key=lambda pair: pair[0])
     return [w for _, w in found]
+
+
+def webinar_start(w):
+    """Начало вебинара как точный момент. Время в WEBINARS — по WEBINAR_TIMEZONE."""
+    webinar_date = parse_date(w["date"])
+    start_time = parse_time(w.get("time"))
+    if webinar_date is None or start_time is None:
+        return None
+    return WEBINAR_TIMEZONE.localize(
+        datetime.datetime.combine(webinar_date, start_time))
 
 
 def webinar_key(w) -> str:
@@ -1023,12 +1090,73 @@ def broadcast(bot, text: str, recipients):
 # ============================================================================
 
 
+def date_words(date_str: str) -> str:
+    """'30.09.2026' -> '30 сентября' — для {date} в напоминании."""
+    d = parse_date(date_str)
+    if d is None:
+        return date_str
+    return f"{d.day} {MONTHS_GENITIVE[d.month - 1]}"
+
+
+def times_phrase(times) -> str:
+    """['11:00', '19:00'] -> '11:00 или 19:00'; три и больше — через запятую."""
+    times = list(times)
+    if len(times) <= 1:
+        return "".join(times)
+    return ", ".join(times[:-1]) + " или " + times[-1]
+
+
+def speaker_of(w) -> str:
+    """Имя спикера — часть названия до первого двоеточия."""
+    name, colon, _ = clean_title(w).partition(": ")
+    return name.strip() if colon and name.strip() else TEXT_SPEAKER_FALLBACK
+
+
+_TEMPLATE_ERRORS = (KeyError, IndexError, ValueError, AttributeError)
+
+
+def reminder_text(w, when: str, other_times: bool):
+    """Текст напоминания про вебинар w. Возвращает (текст, ошибка или None).
+
+    Шаблоны правит владелец, поэтому ошибка в фигурных скобках не должна
+    останавливать рассылку: без абзаца про другое время или по запасному
+    тексту — но напоминание уходит, а об ошибке узнаёт группа.
+    """
+    error = None
+    extra = ""
+    same_day = sorted(webinars_on(w["date"]),
+                      key=lambda x: parse_time(x.get("time")) or datetime.time.max)
+    times = list(dict.fromkeys(x["time"] for x in same_day))
+    if other_times and len(times) > 1:
+        try:
+            extra = TEXT_REMINDER_OTHER_TIMES.format(
+                date=date_words(w["date"]), times=times_phrase(times))
+        except _TEMPLATE_ERRORS as e:
+            logger.error("Ошибка в TEXT_REMINDER_OTHER_TIMES: %r", e)
+            error = e
+    try:
+        return TEXT_REMINDER.format(
+            when=when, time=w["time"], title=clean_title(w),
+            speaker=speaker_of(w), other_times=extra), error
+    except _TEMPLATE_ERRORS as e:
+        logger.error("Ошибка в TEXT_REMINDER: %r — отправляю запасной текст", e)
+        return TEXT_REMINDER_FALLBACK.format(
+            when=when, time=w["time"], title=clean_title(w)), e
+
+
+def warn_template(bot, error) -> None:
+    """Сообщает в группу, что в шаблоне напоминания ошибка."""
+    notify_group(bot, TEXT_GROUP_REMINDER_TEMPLATE_BROKEN.format(
+        error=html.escape(str(error))))
+
+
 def send_reminders(bot, today: datetime.date = None) -> int:
     """Проверяет, есть ли вебинар завтра, и если да — рассылает напоминание."""
     if today is None:
         today = today_local()
 
     total = 0
+    warned = False   # о сломанном шаблоне — одно сообщение за раз
     for w in WEBINARS:
         webinar_date = parse_date(w["date"])
         if webinar_date is None:
@@ -1054,8 +1182,11 @@ def send_reminders(bot, today: datetime.date = None) -> int:
                         key)
             continue
 
-        text = TEXT_REMINDER.format(when=when_phrase(days_left),
-                                    title=clean_title(w), time=w["time"])
+        text, template_error = reminder_text(
+            w, when_phrase(days_left), other_times=True)
+        if template_error and not warned:
+            warn_template(bot, template_error)
+            warned = True
         sent, failed = broadcast(bot, text, recipients)
         reminded_keys.add(sent_tag(key, tag))
         save_registry(bot)
@@ -1089,14 +1220,13 @@ def send_start_reminders(bot, now: datetime.datetime = None) -> int:
         now = datetime.datetime.now(TIMEZONE)
 
     total = 0
+    warned = False   # о сломанном шаблоне — одно сообщение за раз
     for w in WEBINARS:
-        webinar_date = parse_date(w["date"])
-        start_time = parse_time(w.get("time"))
-        if webinar_date is None or start_time is None:
+        # Начало — по WEBINAR_TIMEZONE, now — по TIMEZONE: разность двух
+        # точных моментов от поясов не зависит.
+        start = webinar_start(w)
+        if start is None:
             continue
-
-        start = TIMEZONE.localize(
-            datetime.datetime.combine(webinar_date, start_time))
         minutes_left = (start - now).total_seconds() / 60
         if not 0 < minutes_left <= MINUTES_BEFORE_START:
             continue
@@ -1111,8 +1241,11 @@ def send_start_reminders(bot, now: datetime.datetime = None) -> int:
                         key)
             continue
 
-        text = TEXT_REMINDER.format(when=TEXT_WHEN_SOON,
-                                    title=clean_title(w), time=w["time"])
+        text, template_error = reminder_text(
+            w, TEXT_WHEN_SOON, other_times=False)
+        if template_error and not warned:
+            warn_template(bot, template_error)
+            warned = True
         sent, failed = broadcast(bot, text, recipients)
         reminded_keys.add(sent_tag(key, "soon"))
         save_registry(bot)
@@ -1139,27 +1272,29 @@ def soon_job(context: CallbackContext) -> None:
         send_start_reminders(context.bot)
 
 
-def wakeup_times():
-    """Во сколько сервис обязан не спать, чтобы напоминания ушли.
+def wakeup_times(today: datetime.date = None):
+    """Во сколько по TIMEZONE сервис обязан не спать, чтобы напоминания ушли.
 
     Это и есть список будильников, которые надо завести: время напоминаний
     «за столько-то дней» плюс по одному перед началом каждого вебинара.
+    Вебинары записаны по WEBINAR_TIMEZONE, а разница поясов меняется при
+    переходе на зимнее время, поэтому переводим для каждой даты отдельно —
+    в списке могут оказаться оба варианта.
     """
     needed = set()
     if REMINDER_DAYS:
         needed.add(f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}")
     if REMINDER_BEFORE_START:
-        for w in WEBINARS:
-            start = parse_time(w.get("time"))
+        for w in upcoming_webinars(today):
+            start = webinar_start(w)
             if start is None:
                 continue
             # Будильник ставим чуть ПОЗЖЕ начала окна, а не раньше: сервис
             # просыпается примерно на 15 минут, и эти 15 минут должны целиком
             # попасть внутрь окна. Если будить до его открытия, на проверки
             # внутри окна остаётся всего несколько минут.
-            moment = (datetime.datetime.combine(datetime.date(2000, 1, 1), start)
-                      - datetime.timedelta(minutes=MINUTES_BEFORE_START - 5))
-            needed.add(moment.strftime("%H:%M"))
+            moment = start - datetime.timedelta(minutes=MINUTES_BEFORE_START - 5)
+            needed.add(moment.astimezone(TIMEZONE).strftime("%H:%M"))
     return sorted(needed)
 
 
@@ -1322,9 +1457,11 @@ def stats_command(update: Update, context: CallbackContext) -> None:
                                  for d in sorted(REMINDER_DAYS, reverse=True)),
                   at=f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}", tz=TIMEZONE_LABEL)
               if REMINDER_DAYS else TEXT_STATS_SCHEDULE_NO_DAYS),
-        soon=(TEXT_STATS_SCHEDULE_SOON.format(minutes=MINUTES_BEFORE_START)
+        soon=(TEXT_STATS_SCHEDULE_SOON.format(minutes=MINUTES_BEFORE_START,
+                                              wtz=WEBINAR_TIMEZONE_LABEL)
               if REMINDER_BEFORE_START else ""),
-        wake=(TEXT_STATS_SCHEDULE_WAKE.format(times=", ".join(times))
+        wake=(TEXT_STATS_SCHEDULE_WAKE.format(times=", ".join(times),
+                                              tz=TIMEZONE_LABEL)
               if times else TEXT_STATS_SCHEDULE_NO_WAKE),
     )
 
