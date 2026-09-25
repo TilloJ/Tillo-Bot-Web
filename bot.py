@@ -7,8 +7,11 @@ import os
 import re
 import threading
 import time
+import zipfile
 
 import pytz
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font
 import tornado.web
 from telegram import (
     Update,
@@ -395,7 +398,7 @@ WHO_MAX = 15   # карточек на странице /who: больше за 
 TEXT_ADMIN_HELP = (
     "🛠 <b>Команды в этой группе</b>\n\n"
 
-    "<b>/stats</b> — <b>сколько</b>: человек на каждый вебинар, место в списке, "
+    "<b>/stats</b> — <b>сколько</b>: человек на каждый вебинар, "
     "какие напоминания уже ушли и когда уйдут следующие.\n"
     "<i>Когда нужно:</i> смотреть раз в день, пока идёт реклама.\n\n"
 
@@ -421,9 +424,11 @@ TEXT_ADMIN_HELP = (
     "/who 30.09.2026 19:00. Карточки идут по 15; число в конце — номер "
     "страницы: /who 30.09.2026 19:00 2\n\n"
 
-    "<b>/cleanup</b> — освободить место в списке, убрав записи на прошедшие "
-    "вебинары. Сначала покажет, что именно удалит, и спросит подтверждение.\n"
-    "<i>Когда нужно:</i> если /stats пишет, что список почти заполнен.\n\n"
+    "<b>/cleanup</b> — убрать из списка записи на прошедшие вебинары. Сначала "
+    "покажет, что именно удалит, и спросит подтверждение. Эти люди перестанут "
+    "получать /broadcast.\n"
+    "<i>Когда нужно:</i> почти никогда — места в списке хватает всегда, это "
+    "только для порядка.\n\n"
 
     "<b>/check</b> — проверить вручную, не пора ли отправить напоминание.\n"
     "<i>Когда нужно:</i> обычно никогда — бот делает это сам в 12:00 "
@@ -444,20 +449,10 @@ TEXT_ADMIN_HELP = (
     "уходят сами — записывать их отдельно не нужно."
 )
 
-# {percent} — число, {left} — уже готовая фраза вида "53 регистрации"
-TEXT_GROUP_CAPACITY = (
-    "⚠️ Список записавшихся заполнен на {percent}%.\n"
-    "Осталось место примерно на {left}. Когда оно закончится, новые "
-    "регистрации перестанут сохраняться — сообщите разработчику заранее."
-)
-
-# Строчка про запас места в /stats
-TEXT_STATS_CAPACITY = (
-    "Место в списке: занято {percent}%, ещё примерно {left}."
-)
-
-TEXT_STATS_CAPACITY_WARN = (
-    "⚠️ Список заполнен на {percent}% — осталось примерно {left}!"
+# Строчка в /stats: где лежит сам список
+TEXT_STATS_FILE = (
+    "Список — в файле registry.xlsx: это последний файл от бота в этой "
+    "группе, его можно скачать и открыть в Excel."
 )
 
 TEXT_STATS_SCHEDULE = (
@@ -499,7 +494,7 @@ TEXT_CLEANUP_NOTHING = "Чистить нечего: записей на про�
 TEXT_CLEANUP_PREVIEW = (
     "🧹 Можно освободить место, убрав записи на прошедшие вебинары:\n\n"
     "{items}\n\n"
-    "Всего {removed}. Список станет заполнен на {after}% вместо {before}%.\n\n"
+    "Всего {removed}.\n\n"
     "⚠️ Эти люди больше не получат рассылку через /broadcast. "
     "Кто и на что записывался, останется видно в сообщениях группы выше."
 )
@@ -507,10 +502,7 @@ TEXT_CLEANUP_PREVIEW = (
 TEXT_CLEANUP_BTN_YES = "Удалить"
 TEXT_CLEANUP_BTN_NO = "Отмена"
 
-TEXT_CLEANUP_DONE = (
-    "🧹 Готово, убрано {removed}.\n"
-    "Список заполнен на {after}% вместо {before}%."
-)
+TEXT_CLEANUP_DONE = "🧹 Готово, убрано {removed}."
 
 TEXT_CLEANUP_CANCELLED = "Отменено, ничего не удалено."
 
@@ -541,12 +533,13 @@ TEXT_REGISTRY_FILE_CAPTION = (
 
 # Строка в закреплённом сообщении, когда сам список в него уже не помещается
 TEXT_REGISTRY_IN_FILE = (
-    "Сам список — в файле registry.csv, последнем от бота. Бот читает его сам."
+    "Сам список — в файле registry.xlsx, последнем от бота. Бот читает его сам."
 )
 
-# Заголовки столбцов в registry.csv — по строке на каждую запись на вебинар.
+# Заголовки столбцов в registry.xlsx — по строке на каждую запись на вебинар.
 # Названия можно менять, порядок — нет: бот читает столбцы по порядку.
-TEXT_CSV_HEADER = ("id", "вебинар", "имя", "username", "записан(а), МСК")
+TEXT_FILE_HEADER = ("id", "вебинар", "имя", "username", "записан(а), МСК")
+TEXT_FILE_SHEET = "Записи"      # название листа в Excel
 
 # Бот не может прочитать файл со списком. {error} — что пошло не так.
 TEXT_GROUP_REGISTRY_UNREADABLE = (
@@ -723,7 +716,7 @@ def duplicate_keys():
 # ============================================================================
 # ХРАНИЛИЩЕ ПОДПИСЧИКОВ
 # Бесплатный Render стирает память при перезапуске, поэтому список тех, кто
-# записался, хранится в самой рабочей группе: в файле registry.csv, на который
+# записался, хранится в самой рабочей группе: в файле registry.xlsx, на который
 # указывает закреплённое сообщение (строка FILE:). В файле — по строке на
 # каждую запись: id, вебинар, имя, username, когда записался. Отметки об
 # отправленных напоминаниях (SENT:) — в самом закреплённом сообщении.
@@ -740,18 +733,17 @@ registry_message_id = None
 # пустая память затрёт закреплённое сообщение со всеми регистрациями.
 registry_loaded = False
 
-# Файл бот может скачать, пока он не больше 20 МБ, — это предел списка.
-# (Раньше список жил в самом закреплённом сообщении, и пределом были его
-# 4096 символов.) Предупреждения на 80% и 95% остались, но при таком
-# пределе не сработают.
-REGISTRY_LIMIT = 20 * 1024 * 1024
-CAPACITY_WARN_LEVELS = (80, 95)
-CHARS_PER_REGISTRATION = 11   # ~10 цифр id плюс запятая
+# Предела у списка больше нет: файл бот может скачать до 20 МБ — это десятки
+# тысяч записей. (Пока список жил в самом закреплённом сообщении, пределом
+# были его 4096 символов, и бот предупреждал на 80% и 95%.)
+warned_levels = set()        # старые отметки WARN: — читаем и храним как есть
 
-warned_levels = set()        # на каких порогах уже предупреждали
-
-REGISTRY_FILENAME = "registry.csv"
-CSV_DELIMITER = ";"          # так русский и чешский Excel сразу делят столбцы
+REGISTRY_FILENAME = "registry.xlsx"
+# 25.09 вечером список был в CSV — его бот ещё умеет прочитать и переписать
+CSV_DELIMITER = ";"
+# В каком виде был файл при последнем чтении: "xlsx", "csv", "text" или None.
+# Если не в xlsx — бот перепишет его сразу после запуска.
+registry_file_format = None
 # Имя и @username каждого, кто записался: id -> (имя, username).
 people = {}
 # Когда человек записался на вебинар: (ключ вебинара, id) -> '2026-09-25 17:24'
@@ -826,7 +818,7 @@ def prune_resolved() -> int:
 
     Иначе человек навсегда остаётся сразу в двух строках: и в старой без
     времени, и в новой с временем. Старая строка так постепенно тает и в
-    конце концов исчезает совсем, освобождая место в списке.
+    конце концов исчезает совсем.
 
     Перезапись на вебинар в ДРУГОЙ день не считается: на этот день человек
     по-прежнему непонятно куда записан.
@@ -904,17 +896,6 @@ def registry_text(snap=None) -> str:
     return "\n".join(lines)
 
 
-def capacity_percent() -> int:
-    """На сколько процентов заполнено закреплённое сообщение."""
-    return min(100, round(len(registry_text()) * 100 / REGISTRY_LIMIT))
-
-
-def capacity_left() -> int:
-    """Сколько ещё регистраций примерно поместится."""
-    free = REGISTRY_LIMIT - len(registry_text())
-    return max(0, free // CHARS_PER_REGISTRATION)
-
-
 def past_registration_dates(today: datetime.date = None):
     """Даты в списке, которые уже прошли: [(дата, сколько записей)]."""
     if today is None:
@@ -930,19 +911,6 @@ def past_registration_dates(today: datetime.date = None):
     return [(date_str, count) for _, date_str, count in found]
 
 
-def cleanup_frees(past) -> int:
-    """Сколько символов освободит удаление этих дат (без изменения списка)."""
-    freed = 0
-    for date_str, _ in past:
-        ids = registrations.get(date_str, set())
-        line = f"{date_str}:" + ",".join(str(i) for i in sorted(ids))
-        freed += len(line) + 1                # +1 за перевод строки
-        for entry in reminded_keys:
-            if entry.split("@", 1)[0] == date_str:
-                freed += len(entry) + 1       # отметка в строке SENT: плюс запятая
-    return freed
-
-
 def plural_ru(number: int, one: str, few: str, many: str) -> str:
     """Русские числительные: 1 регистрацию, 2 регистрации, 5 регистраций."""
     if number % 100 in (11, 12, 13, 14):
@@ -953,13 +921,6 @@ def plural_ru(number: int, one: str, few: str, many: str) -> str:
     if last in (2, 3, 4):
         return few
     return many
-
-
-def capacity_left_phrase() -> str:
-    """'53 регистрации' — уже в нужном падеже, чтобы подставить в текст."""
-    left = capacity_left()
-    return f"{left} " + plural_ru(left, "регистрацию", "регистрации",
-                                  "регистраций")
 
 
 def parse_registry(text: str):
@@ -1014,9 +975,9 @@ def parse_registry(text: str):
     return regs, sent, warn, pointers, total
 
 
-def download_registry(bot, file_id: str) -> str:
-    """Скачивает файл списка из группы (utf-8-sig снимает метку BOM у CSV)."""
-    return bytes(bot.get_file(file_id).download_as_bytearray()).decode("utf-8-sig")
+def download_registry(bot, file_id: str) -> bytes:
+    """Скачивает файл списка из группы."""
+    return bytes(bot.get_file(file_id).download_as_bytearray())
 
 
 def snapshot():
@@ -1033,13 +994,9 @@ def remember_person(user_id: int, name: str, username: str) -> None:
     people[user_id] = ((name or "").strip(), username or "")
 
 
-# Excel считает формулой ячейку, которая начинается с этих знаков, — а имя в
-# Телеграме человек пишет сам. Такие имена храним с апострофом впереди.
+# В CSV (25.09 вечером) имя, похожее на формулу Excel, хранилось с апострофом
+# впереди. При чтении такого файла апостроф снимаем.
 _FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
-
-
-def csv_safe(value: str) -> str:
-    return "'" + value if value.startswith(_FORMULA_START) else value
 
 
 def csv_unsafe(value: str) -> str:
@@ -1048,17 +1005,72 @@ def csv_unsafe(value: str) -> str:
     return value
 
 
-def registry_csv(snap) -> bytes:
-    """registry.csv: строка на каждую запись на вебинар."""
-    out = io.StringIO()
-    writer = csv.writer(out, delimiter=CSV_DELIMITER, lineterminator="\r\n")
-    writer.writerow(TEXT_CSV_HEADER)
+def registry_xlsx(snap) -> bytes:
+    """registry.xlsx: строка на каждую запись на вебинар."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = TEXT_FILE_SHEET
+    ws.append(list(TEXT_FILE_HEADER))
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    row = 1
     for key in sorted(snap, key=lambda k: (key_date(k) or datetime.date.max, k)):
         for uid in sorted(snap[key], key=lambda u: (signed_at.get((key, u), ""), u)):
+            row += 1
             name, username = people.get(uid, ("", ""))
-            writer.writerow([uid, key, csv_safe(name), username,
-                             signed_at.get((key, uid), "")])
-    return out.getvalue().encode("utf-8-sig")
+            ws.cell(row=row, column=1, value=uid)
+            # Текст остаётся текстом: имя вроде «=HYPERLINK(...)» openpyxl
+            # иначе записал бы формулой, а Excel бы её выполнил.
+            for col, value in ((2, key), (3, name), (4, username)):
+                cell = ws.cell(row=row, column=col, value=value)
+                cell.data_type = "s"
+            when = signed_at.get((key, uid))
+            if when:
+                cell = ws.cell(row=row, column=5, value=datetime.datetime.strptime(
+                    when, "%Y-%m-%d %H:%M"))
+                cell.number_format = "yyyy-mm-dd hh:mm"
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:E{row}"
+    for letter, width in zip("ABCDE", (13, 17, 32, 20, 18)):
+        ws.column_dimensions[letter].width = width
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def parse_registry_xlsx(data: bytes):
+    """Разбирает registry.xlsx. Возвращает (записи, люди, время записи).
+
+    Непонятная строка — ошибка, а не пропуск: это наш собственный файл, и
+    испорченный файл нельзя принять за прочитанный.
+    """
+    regs, ppl, times = {}, {}, {}
+    wb = load_workbook(io.BytesIO(data), read_only=True)
+    try:
+        rows = wb.worksheets[0].iter_rows(values_only=True)
+        next(rows, None)                  # заголовки столбцов
+        for row in rows:
+            if not row or all(v in (None, "") for v in row):
+                continue
+            uid, key = row[0], str(row[1] or "").strip()
+            if isinstance(uid, float) and uid.is_integer():
+                uid = int(uid)
+            if not isinstance(uid, int) or not _KEY_LINE.match(key + ":"):
+                raise ValueError(f"непонятная строка в файле: {str(row[:2])[:60]}")
+            key = migrate_key(key)
+            regs.setdefault(key, set()).add(uid)
+            name = str(row[2] or "") if len(row) > 2 else ""
+            username = str(row[3] or "") if len(row) > 3 else ""
+            if name or username:
+                ppl[uid] = (name, username)
+            when = row[4] if len(row) > 4 else None
+            if isinstance(when, datetime.datetime):
+                times[(key, uid)] = when.strftime("%Y-%m-%d %H:%M")
+            elif when:
+                times[(key, uid)] = str(when).strip()
+    finally:
+        wb.close()
+    return regs, ppl, times
 
 
 def parse_registry_csv(data: str):
@@ -1120,7 +1132,9 @@ def backfill_names(bot) -> None:
         time.sleep(0.1)
     if missing:
         logger.info("Имена: узнали %s из %s", found, len(missing))
-    if found:
+    # Сохраняем, если узнали новые имена или файл ещё в старом виде (CSV,
+    # текст) — тогда он сразу станет registry.xlsx, не дожидаясь регистрации.
+    if found or (file_pointer and registry_file_format != "xlsx"):
         save_registry(bot)
 
 
@@ -1133,7 +1147,7 @@ def load_registry(bot) -> bool:
     пока группа была недоступна, переживает повторное чтение перед записью.
     """
     global registry_message_id, registry_loaded, file_pointer, prev_pointer
-    global _read_failures
+    global _read_failures, registry_file_format
 
     if not ADMIN_CHAT_ID:
         logger.error(
@@ -1163,15 +1177,20 @@ def load_registry(bot) -> bool:
         # (если она ещё помещается) — только для отката на старую версию.
         try:
             data = download_registry(bot, pointers["FILE"][1])
-            if data.startswith(REGISTRY_HEADER):
+            if data[:2] == b"PK":                 # xlsx — это zip-архив
+                regs, ppl, times = parse_registry_xlsx(data)
+                fmt = "xlsx"
+            elif data.decode("utf-8-sig").startswith(REGISTRY_HEADER):
                 # Файл в старом текстовом виде (так было 25.09 до вечера):
                 # отметки SENT тогда жили в нём, а не в сообщении.
-                regs, fsent, fwarn, _, _ = parse_registry(data)
+                regs, fsent, fwarn, _, _ = parse_registry(data.decode("utf-8"))
                 sent |= fsent
                 warn |= fwarn
                 ppl, times = {}, {}
-            else:
-                regs, ppl, times = parse_registry_csv(data)
+                fmt = "text"
+            else:                                 # CSV — 25.09 вечером
+                regs, ppl, times = parse_registry_csv(data.decode("utf-8-sig"))
+                fmt = "csv"
             count = len(set().union(*regs.values())) if regs else 0
             # «Всего» записано в сообщение тем же сохранением, что и файл.
             # Файл, оборвавшийся на границе строки, разбирается без ошибок,
@@ -1179,7 +1198,10 @@ def load_registry(bot) -> bool:
             if total is not None and count != total:
                 raise ValueError(f"в файле {count} чел., а в закреплённом "
                                  f"сообщении — {total}")
-        except (TelegramError, ValueError, UnicodeDecodeError, csv.Error) as e:
+        except Exception as e:     # сеть, битый файл, неизвестный формат
+            if not isinstance(e, (TelegramError, ValueError, UnicodeDecodeError,
+                                  csv.Error, zipfile.BadZipFile)):
+                logger.exception("Неожиданная ошибка при чтении файла списка")
             registry_loaded = False
             _read_failures += 1
             logger.error("Не удалось прочитать файл списка: %s", e)
@@ -1191,6 +1213,7 @@ def load_registry(bot) -> bool:
             return False
         file_pointer = pointers["FILE"]
         prev_pointer = pointers.get("PREV")
+        registry_file_format = fmt
 
     for key, ids in regs.items():
         registrations.setdefault(key, set()).update(ids)
@@ -1270,7 +1293,7 @@ def save_registry(bot) -> bool:
 
 
 def _save_registry(bot) -> bool:
-    global registry_message_id, file_pointer, prev_pointer
+    global registry_message_id, file_pointer, prev_pointer, registry_file_format
 
     if not ADMIN_CHAT_ID:
         # Режим без группы (локальный запуск): сохранять негде, но и падать
@@ -1291,21 +1314,13 @@ def _save_registry(bot) -> bool:
     # Кто перезаписался — того в старой строке «по дате» держать незачем
     prune_resolved()
 
-    # Пороги, которые пройдены впервые. Считаем ДО записи, чтобы отметка
-    # "предупреждали" сохранилась тем же самым сообщением, а не следующим.
-    percent = capacity_percent()
-    warned_levels.difference_update({l for l in list(warned_levels) if percent < l})
-    pending = [l for l in CAPACITY_WARN_LEVELS
-               if l not in warned_levels and percent >= l]
-    warned_levels.update(pending)
-
     prune_past_sent()
 
     # Один снимок на всё сохранение: из него и файл, и сообщение — чтобы
     # регистрация, пришедшая посередине, не развела их «Всего».
     snap = snapshot()
     text = registry_text(snap)
-    data = registry_csv(snap)
+    data = registry_xlsx(snap)
 
     # 1. Сначала новый файл. Не загрузился — ничего не поменялось.
     try:
@@ -1317,7 +1332,6 @@ def _save_registry(bot) -> bool:
             disable_notification=True,
         ))
     except TelegramError as e:
-        warned_levels.difference_update(pending)
         logger.error("Не удалось загрузить файл списка: %s", e)
         return False
 
@@ -1345,19 +1359,13 @@ def _save_registry(bot) -> bool:
             )
     except TelegramError as e:
         file_pointer, prev_pointer = old_file, old_prev
-        warned_levels.difference_update(pending)
         logger.error("Не удалось сохранить список подписчиков: %s", e)
         return False
 
     # 3. Файл старше предыдущего больше нигде не упомянут
     if old_prev and DELETE_OLD_REGISTRY_FILES:
         delete_quietly(bot, old_prev[0])
-
-    for level in pending:
-        logger.warning("Список заполнен на %s%% — предупреждаю группу", percent)
-        notify_group(bot, TEXT_GROUP_CAPACITY.format(
-            percent=percent, left=capacity_left_phrase(),
-        ))
+    registry_file_format = "xlsx"
     return True
 
 
@@ -1898,11 +1906,7 @@ def stats_command(update: Update, context: CallbackContext) -> None:
               if times else TEXT_STATS_SCHEDULE_NO_WAKE),
     )
 
-    percent = capacity_percent()
-    template = (TEXT_STATS_CAPACITY_WARN if percent >= CAPACITY_WARN_LEVELS[0]
-                else TEXT_STATS_CAPACITY)
-    text += "\n\n" + template.format(percent=percent,
-                                      left=capacity_left_phrase())
+    text += "\n\n" + TEXT_STATS_FILE
 
     # Записи, которые не удалось привязать к конкретному вебинару, иначе бы
     # они молча не получили напоминание.
@@ -2099,7 +2103,7 @@ def records_phrase(count: int) -> str:
 
 
 def cleanup_command(update: Update, context: CallbackContext) -> None:
-    """/cleanup — показать, сколько места занимают прошедшие вебинары."""
+    """/cleanup — показать записи на прошедшие вебинары и предложить их убрать."""
     if not is_admin_chat(update):
         return
 
@@ -2110,9 +2114,6 @@ def cleanup_command(update: Update, context: CallbackContext) -> None:
 
     items = "\n".join(f"• {key_label(date_str)} — {records_phrase(count)}"
                       for date_str, count in past)
-    before = capacity_percent()
-    after = max(0, round((len(registry_text()) - cleanup_frees(past)) * 100
-                         / REGISTRY_LIMIT))
     keyboard = [[
         InlineKeyboardButton(TEXT_CLEANUP_BTN_YES, callback_data="cleanup:yes"),
         InlineKeyboardButton(TEXT_CLEANUP_BTN_NO, callback_data="cleanup:no"),
@@ -2121,7 +2122,6 @@ def cleanup_command(update: Update, context: CallbackContext) -> None:
         TEXT_CLEANUP_PREVIEW.format(
             items=items,
             removed=records_phrase(sum(c for _, c in past)),
-            before=before, after=after,
         ),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
@@ -2147,7 +2147,6 @@ def cleanup_callback(update: Update, context: CallbackContext) -> None:
         query.edit_message_text(TEXT_CLEANUP_NOTHING)
         return
 
-    before = capacity_percent()
     removed = sum(count for _, count in past)
     backup = {d: set(registrations[d]) for d, _ in past if d in registrations}
     backup_sent = set(reminded_keys)
@@ -2168,9 +2167,7 @@ def cleanup_callback(update: Update, context: CallbackContext) -> None:
     logger.info("Очистка: убрано %s записей за %s прошедших вебинаров",
                 removed, len(past))
     query.edit_message_text(TEXT_CLEANUP_DONE.format(
-        removed=records_phrase(removed),
-        before=before, after=capacity_percent(),
-    ))
+        removed=records_phrase(removed)))
 
 
 def replied_user_ids(message):
