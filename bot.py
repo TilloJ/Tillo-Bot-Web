@@ -492,11 +492,13 @@ TEXT_STATS_DUPLICATES = (
 TEXT_CLEANUP_NOTHING = "Чистить нечего: записей на прошедшие вебинары нет."
 
 TEXT_CLEANUP_PREVIEW = (
-    "🧹 Можно освободить место, убрав записи на прошедшие вебинары:\n\n"
+    "🧹 Удалить записи на прошедшие вебинары:\n\n"
     "{items}\n\n"
     "Всего {removed}.\n\n"
-    "⚠️ Эти люди больше не получат рассылку через /broadcast. "
-    "Кто и на что записывался, останется видно в сообщениях группы выше."
+    "⚠️ Обычно этого делать НЕ нужно. Эти записи уже лежат на листе «Архив» "
+    "в registry.xlsx и ничему не мешают. Удаление сотрёт их и оттуда: этих "
+    "людей не останется ни в файле, ни в рассылке /broadcast — восстановить "
+    "будет неоткуда."
 )
 
 TEXT_CLEANUP_BTN_YES = "Удалить"
@@ -531,7 +533,7 @@ TEXT_REGISTRY_FILE_CAPTION = (
     "в Excel, но не удаляйте его."
 )
 
-# Строка в закреплённом сообщении, когда сам список в него уже не помещается
+# Строка в закреплённом сообщении вместо самого списка
 TEXT_REGISTRY_IN_FILE = (
     "Сам список — в файле registry.xlsx, последнем от бота. Бот читает его сам."
 )
@@ -539,7 +541,11 @@ TEXT_REGISTRY_IN_FILE = (
 # Заголовки столбцов в registry.xlsx — по строке на каждую запись на вебинар.
 # Названия можно менять, порядок — нет: бот читает столбцы по порядку.
 TEXT_FILE_HEADER = ("id", "вебинар", "имя", "username", "записан(а), МСК")
-TEXT_FILE_SHEET = "Записи"      # название листа в Excel
+# Два листа в файле. Записи на прошедшие вебинары бот сам переносит на лист
+# «Архив» — оттуда ничего не пропадает, это база всех, кто когда-либо
+# записывался. Бот читает оба листа одинаково.
+TEXT_FILE_SHEET = "Записи"              # на будущие вебинары
+TEXT_FILE_SHEET_ARCHIVE = "Архив"       # на прошедшие
 
 # Бот не может прочитать файл со списком. {error} — что пошло не так.
 TEXT_GROUP_REGISTRY_UNREADABLE = (
@@ -750,11 +756,6 @@ people = {}
 # по Москве. У записавшихся до 25.09 этого нет — тогда время не хранилось.
 signed_at = {}
 BACKFILL_MAX = 300           # сколько имён узнавать у Телеграма за один запуск
-# Пока список помещается в закреплённое сообщение, он лежит и там — рядом с
-# указателем на файл. Это страховка на случай отката на старую версию бота:
-# та умеет читать только само закреплённое сообщение. Запас — на эмодзи и
-# строки FILE:/PREV:.
-PIN_LIMIT = 4096 - 200
 # Сообщение с файлом текущего списка и предыдущего: (message_id, file_id).
 file_pointer = None
 prev_pointer = None
@@ -1005,16 +1006,13 @@ def csv_unsafe(value: str) -> str:
     return value
 
 
-def registry_xlsx(snap) -> bytes:
-    """registry.xlsx: строка на каждую запись на вебинар."""
-    wb = Workbook()
-    ws = wb.active
-    ws.title = TEXT_FILE_SHEET
+def fill_sheet(ws, keys, snap) -> None:
+    """Заполняет лист файла: шапка и по строке на каждую запись."""
     ws.append(list(TEXT_FILE_HEADER))
     for cell in ws[1]:
         cell.font = Font(bold=True)
     row = 1
-    for key in sorted(snap, key=lambda k: (key_date(k) or datetime.date.max, k)):
+    for key in keys:
         for uid in sorted(snap[key], key=lambda u: (signed_at.get((key, u), ""), u)):
             row += 1
             name, username = people.get(uid, ("", ""))
@@ -1033,6 +1031,26 @@ def registry_xlsx(snap) -> bytes:
     ws.auto_filter.ref = f"A1:E{row}"
     for letter, width in zip("ABCDE", (13, 17, 32, 20, 18)):
         ws.column_dimensions[letter].width = width
+
+
+def registry_xlsx(snap, today: datetime.date = None) -> bytes:
+    """registry.xlsx: строка на каждую запись на вебинар, два листа.
+
+    «Записи» — на вебинары, которые ещё впереди; «Архив» — на прошедшие.
+    Переезд на «Архив» происходит сам, когда вебинар прошёл, и НИЧЕГО не
+    удаляет: для бота оба листа — один и тот же список, и /broadcast по-
+    прежнему доходит до всех. Удалить кого-то может только /cleanup.
+    """
+    if today is None:
+        today = today_local()
+    order = sorted(snap, key=lambda k: (key_date(k) or datetime.date.max, k))
+    past = [k for k in order if (key_date(k) or today) < today]
+    upcoming = [k for k in order if k not in set(past)]
+    wb = Workbook()
+    active = wb.active
+    active.title = TEXT_FILE_SHEET
+    fill_sheet(active, upcoming, snap)
+    fill_sheet(wb.create_sheet(TEXT_FILE_SHEET_ARCHIVE), past, snap)
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()
@@ -1047,8 +1065,12 @@ def parse_registry_xlsx(data: bytes):
     regs, ppl, times = {}, {}, {}
     wb = load_workbook(io.BytesIO(data), read_only=True)
     try:
-        rows = wb.worksheets[0].iter_rows(values_only=True)
-        next(rows, None)                  # заголовки столбцов
+        # Читаем ВСЕ листы: и «Записи», и «Архив» — для бота это один список.
+        rows = []
+        for ws in wb.worksheets:
+            sheet_rows = ws.iter_rows(values_only=True)
+            next(sheet_rows, None)        # заголовки столбцов
+            rows.extend(sheet_rows)
         for row in rows:
             if not row or all(v in (None, "") for v in row):
                 continue
@@ -1172,6 +1194,15 @@ def load_registry(bot) -> bool:
     registry_message_id = pinned.message_id
     regs, sent, warn, pointers, total = parse_registry(pinned.text)
 
+    if "FILE" not in pointers and total and not regs:
+        # Раньше список лежал в самом сообщении. Если ни списка в нём, ни
+        # ссылки на файл, а «Всего» говорит, что люди есть, — читать нечего.
+        # Считать это пустым списком нельзя: следующая запись затёрла бы всех.
+        registry_loaded = False
+        logger.error("В закреплённом сообщении «Всего: %s», но ни списка, ни "
+                     "ссылки на файл в нём нет — НИЧЕГО не пишу", total)
+        return False
+
     if "FILE" in pointers:
         # Список — в файле, и верим именно файлу. Копия в самом сообщении
         # (если она ещё помещается) — только для отката на старую версию.
@@ -1238,7 +1269,8 @@ def load_registry(bot) -> bool:
 
 
 def pin_text(text: str) -> str:
-    """Закреплённое сообщение: указатель на файл и, пока влезает, сам список.
+    """Закреплённое сообщение: сколько человек, отметки о напоминаниях и
+    указатель на файл. Сам список — в файле.
 
     text — тот же снимок списка, что ушёл в файл, чтобы «Всего» в сообщении
     и файл никогда не расходились.
@@ -1248,12 +1280,9 @@ def pin_text(text: str) -> str:
         pointer.append(f"FILE:{file_pointer[0]}:{file_pointer[1]}")
     if prev_pointer:
         pointer.append(f"PREV:{prev_pointer[0]}:{prev_pointer[1]}")
-    full = "\n".join([text] + pointer)
-    if len(full) <= PIN_LIMIT:
-        return full
     lines = text.split("\n")
     total_line = next(l for l in lines if l.startswith("Всего:"))
-    # Отметки о напоминаниях в файле больше не хранятся — только здесь
+    # Отметки о напоминаниях в файле не хранятся — только здесь
     marks = [l for l in lines if l.startswith(("SENT:", "WARN:"))]
     return "\n".join([REGISTRY_HEADER, total_line, TEXT_REGISTRY_IN_FILE]
                      + marks + pointer)
