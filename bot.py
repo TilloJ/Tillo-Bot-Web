@@ -1,3 +1,4 @@
+import csv
 import datetime
 import html
 import io
@@ -534,13 +535,18 @@ TEXT_GROUP_REMINDER_TEMPLATE_BROKEN = (
 # Список записавшихся хранится в файле registry.txt в этой группе.
 # Подпись к этому файлу:
 TEXT_REGISTRY_FILE_CAPTION = (
-    "📋 Список записавшихся — служебный файл бота. Не удаляйте его."
+    "📋 Список записавшихся — служебный файл бота. Его можно скачать и открыть "
+    "в Excel, но не удаляйте его."
 )
 
 # Строка в закреплённом сообщении, когда сам список в него уже не помещается
 TEXT_REGISTRY_IN_FILE = (
-    "Сам список — в файле registry.txt, последнем от бота. Бот читает его сам."
+    "Сам список — в файле registry.csv, последнем от бота. Бот читает его сам."
 )
+
+# Заголовки столбцов в registry.csv — по строке на каждую запись на вебинар.
+# Названия можно менять, порядок — нет: бот читает столбцы по порядку.
+TEXT_CSV_HEADER = ("id", "вебинар", "имя", "username", "записан(а), МСК")
 
 # Бот не может прочитать файл со списком. {error} — что пошло не так.
 TEXT_GROUP_REGISTRY_UNREADABLE = (
@@ -717,9 +723,10 @@ def duplicate_keys():
 # ============================================================================
 # ХРАНИЛИЩЕ ПОДПИСЧИКОВ
 # Бесплатный Render стирает память при перезапуске, поэтому список тех, кто
-# записался, хранится в самой рабочей группе: в файле registry.txt, на который
-# указывает закреплённое сообщение (строка FILE:). Формат списка: по строке на
-# каждый вебинар — "ДД.ММ.ГГГГ-ЧЧММ:id,id,id", плюс SENT: и WARN:.
+# записался, хранится в самой рабочей группе: в файле registry.csv, на который
+# указывает закреплённое сообщение (строка FILE:). В файле — по строке на
+# каждую запись: id, вебинар, имя, username, когда записался. Отметки об
+# отправленных напоминаниях (SENT:) — в самом закреплённом сообщении.
 # ============================================================================
 
 REGISTRY_HEADER = "📋 СПИСОК ЗАРЕГИСТРИРОВАННЫХ (не удалять, не редактировать)"
@@ -743,7 +750,14 @@ CHARS_PER_REGISTRATION = 11   # ~10 цифр id плюс запятая
 
 warned_levels = set()        # на каких порогах уже предупреждали
 
-REGISTRY_FILENAME = "registry.txt"
+REGISTRY_FILENAME = "registry.csv"
+CSV_DELIMITER = ";"          # так русский и чешский Excel сразу делят столбцы
+# Имя и @username каждого, кто записался: id -> (имя, username).
+people = {}
+# Когда человек записался на вебинар: (ключ вебинара, id) -> '2026-09-25 17:24'
+# по Москве. У записавшихся до 25.09 этого нет — тогда время не хранилось.
+signed_at = {}
+BACKFILL_MAX = 300           # сколько имён узнавать у Телеграма за один запуск
 # Пока список помещается в закреплённое сообщение, он лежит и там — рядом с
 # указателем на файл. Это страховка на случай отката на старую версию бота:
 # та умеет читать только само закреплённое сообщение. Запас — на эмодзи и
@@ -870,11 +884,18 @@ def all_subscribers() -> set:
     return everyone
 
 
-def registry_text() -> str:
-    lines = [REGISTRY_HEADER, f"Всего: {len(all_subscribers())}"]
-    for key in sorted(registrations,
+def registry_text(snap=None) -> str:
+    """Список в старом текстовом виде — он же копия в закреплённом сообщении.
+
+    snap — снимок registrations: сохранение строит из одного снимка и файл,
+    и сообщение, чтобы «Всего» в них не разошлось.
+    """
+    regs = registrations if snap is None else snap
+    everyone = set().union(*regs.values()) if regs else set()
+    lines = [REGISTRY_HEADER, f"Всего: {len(everyone)}"]
+    for key in sorted(regs,
                       key=lambda k: (key_date(k) or datetime.date.max, k)):
-        ids = registrations[key]
+        ids = regs[key]
         if ids:
             lines.append(f"{key}:" + ",".join(str(i) for i in sorted(ids)))
     lines.append("SENT:" + ",".join(sorted(reminded_keys)))
@@ -994,8 +1015,113 @@ def parse_registry(text: str):
 
 
 def download_registry(bot, file_id: str) -> str:
-    """Скачивает файл списка из группы."""
-    return bytes(bot.get_file(file_id).download_as_bytearray()).decode("utf-8")
+    """Скачивает файл списка из группы (utf-8-sig снимает метку BOM у CSV)."""
+    return bytes(bot.get_file(file_id).download_as_bytearray()).decode("utf-8-sig")
+
+
+def snapshot():
+    """Копия registrations, которую другой поток уже не поменяет."""
+    return {k: v.copy() for k, v in registrations.copy().items()}
+
+
+def now_msk() -> str:
+    """Время записи — по Москве, как и время вебинаров: '2026-09-25 17:24'."""
+    return datetime.datetime.now(WEBINAR_TIMEZONE).strftime("%Y-%m-%d %H:%M")
+
+
+def remember_person(user_id: int, name: str, username: str) -> None:
+    people[user_id] = ((name or "").strip(), username or "")
+
+
+# Excel считает формулой ячейку, которая начинается с этих знаков, — а имя в
+# Телеграме человек пишет сам. Такие имена храним с апострофом впереди.
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(value: str) -> str:
+    return "'" + value if value.startswith(_FORMULA_START) else value
+
+
+def csv_unsafe(value: str) -> str:
+    if value.startswith("'") and value[1:].startswith(_FORMULA_START):
+        return value[1:]
+    return value
+
+
+def registry_csv(snap) -> bytes:
+    """registry.csv: строка на каждую запись на вебинар."""
+    out = io.StringIO()
+    writer = csv.writer(out, delimiter=CSV_DELIMITER, lineterminator="\r\n")
+    writer.writerow(TEXT_CSV_HEADER)
+    for key in sorted(snap, key=lambda k: (key_date(k) or datetime.date.max, k)):
+        for uid in sorted(snap[key], key=lambda u: (signed_at.get((key, u), ""), u)):
+            name, username = people.get(uid, ("", ""))
+            writer.writerow([uid, key, csv_safe(name), username,
+                             signed_at.get((key, uid), "")])
+    return out.getvalue().encode("utf-8-sig")
+
+
+def parse_registry_csv(data: str):
+    """Разбирает registry.csv. Возвращает (записи, люди, время записи).
+
+    Непонятная строка — ошибка, а не пропуск: это наш собственный файл, и
+    испорченный файл нельзя принять за прочитанный.
+    """
+    regs, ppl, times = {}, {}, {}
+    rows = csv.reader(io.StringIO(data), delimiter=CSV_DELIMITER)
+    next(rows, None)                      # заголовки столбцов
+    for row in rows:
+        if not row:
+            continue
+        key = row[1].strip() if len(row) > 1 else ""
+        if not row[0].strip().isdigit() or not _KEY_LINE.match(key + ":"):
+            raise ValueError(f"непонятная строка в файле: {';'.join(row[:2])[:60]}")
+        uid, key = int(row[0]), migrate_key(key)
+        regs.setdefault(key, set()).add(uid)
+        name = csv_unsafe(row[2]) if len(row) > 2 else ""
+        username = row[3].strip() if len(row) > 3 else ""
+        if name or username:
+            ppl[uid] = (name, username)
+        if len(row) > 4 and row[4].strip():
+            times[(key, uid)] = row[4].strip()
+    return regs, ppl, times
+
+
+def prune_past_sent(today: datetime.date = None) -> int:
+    """Отметки о напоминаниях про прошедшие вебинары больше не нужны.
+
+    Теперь они живут в закреплённом сообщении, а оно не резиновое. Напоминание
+    про прошедший вебинар уйти уже не может, так что и отметка ни к чему.
+    """
+    if today is None:
+        today = today_local()
+    stale = {t for t in reminded_keys
+             if (key_date(t.split("@", 1)[0]) or today) < today}
+    reminded_keys.difference_update(stale)
+    return len(stale)
+
+
+def backfill_names(bot) -> None:
+    """Узнаёт имена тех, кто записался, пока бот имён не хранил (до 25.09).
+
+    Идёт в своём потоке после запуска, по одному запросу в 0,1 с, и в конце
+    один раз сохраняет список — уже с именами.
+    """
+    everyone = set().union(*snapshot().values()) if registrations else set()
+    missing = sorted(u for u in everyone if u not in people)
+    found = 0
+    for uid in missing[:BACKFILL_MAX]:
+        try:
+            chat = bot.get_chat(uid)
+            remember_person(uid, chat.full_name, chat.username)
+            found += 1
+        except TelegramError as e:
+            logger.info("Не удалось узнать имя %s: %s", uid, e)
+        time.sleep(0.1)
+    if missing:
+        logger.info("Имена: узнали %s из %s", found, len(missing))
+    if found:
+        save_registry(bot)
 
 
 def load_registry(bot) -> bool:
@@ -1036,16 +1162,24 @@ def load_registry(bot) -> bool:
         # Список — в файле, и верим именно файлу. Копия в самом сообщении
         # (если она ещё помещается) — только для отката на старую версию.
         try:
-            regs, sent, warn, _, _ = parse_registry(
-                download_registry(bot, pointers["FILE"][1]))
-            people = len(set().union(*regs.values())) if regs else 0
+            data = download_registry(bot, pointers["FILE"][1])
+            if data.startswith(REGISTRY_HEADER):
+                # Файл в старом текстовом виде (так было 25.09 до вечера):
+                # отметки SENT тогда жили в нём, а не в сообщении.
+                regs, fsent, fwarn, _, _ = parse_registry(data)
+                sent |= fsent
+                warn |= fwarn
+                ppl, times = {}, {}
+            else:
+                regs, ppl, times = parse_registry_csv(data)
+            count = len(set().union(*regs.values())) if regs else 0
             # «Всего» записано в сообщение тем же сохранением, что и файл.
             # Файл, оборвавшийся на границе строки, разбирается без ошибок,
             # но людей в нём меньше — такой файл прочитанным не считаем.
-            if total is not None and people != total:
-                raise ValueError(f"в файле {people} чел., а в закреплённом "
+            if total is not None and count != total:
+                raise ValueError(f"в файле {count} чел., а в закреплённом "
                                  f"сообщении — {total}")
-        except (TelegramError, ValueError, UnicodeDecodeError) as e:
+        except (TelegramError, ValueError, UnicodeDecodeError, csv.Error) as e:
             registry_loaded = False
             _read_failures += 1
             logger.error("Не удалось прочитать файл списка: %s", e)
@@ -1060,6 +1194,12 @@ def load_registry(bot) -> bool:
 
     for key, ids in regs.items():
         registrations.setdefault(key, set()).update(ids)
+    if "FILE" in pointers:
+        # то, что память уже знает (свежая регистрация), не затираем
+        for uid, info in ppl.items():
+            people.setdefault(uid, info)
+        for pair, when in times.items():
+            signed_at.setdefault(pair, when)
     reminded_keys.update(sent)
     warned_levels.update(warn)
     _read_failures = 0
@@ -1088,8 +1228,12 @@ def pin_text(text: str) -> str:
     full = "\n".join([text] + pointer)
     if len(full) <= PIN_LIMIT:
         return full
-    total_line = next(l for l in text.split("\n") if l.startswith("Всего:"))
-    return "\n".join([REGISTRY_HEADER, total_line, TEXT_REGISTRY_IN_FILE] + pointer)
+    lines = text.split("\n")
+    total_line = next(l for l in lines if l.startswith("Всего:"))
+    # Отметки о напоминаниях в файле больше не хранятся — только здесь
+    marks = [l for l in lines if l.startswith(("SENT:", "WARN:"))]
+    return "\n".join([REGISTRY_HEADER, total_line, TEXT_REGISTRY_IN_FILE]
+                     + marks + pointer)
 
 
 def with_retry(call):
@@ -1155,14 +1299,19 @@ def _save_registry(bot) -> bool:
                if l not in warned_levels and percent >= l]
     warned_levels.update(pending)
 
-    # Один снимок на всё сохранение: он же уходит в файл, он же — в сообщение
-    text = registry_text()
+    prune_past_sent()
+
+    # Один снимок на всё сохранение: из него и файл, и сообщение — чтобы
+    # регистрация, пришедшая посередине, не развела их «Всего».
+    snap = snapshot()
+    text = registry_text(snap)
+    data = registry_csv(snap)
 
     # 1. Сначала новый файл. Не загрузился — ничего не поменялось.
     try:
         doc = with_retry(lambda: bot.send_document(
             chat_id=ADMIN_CHAT_ID,
-            document=io.BytesIO(text.encode("utf-8")),
+            document=io.BytesIO(data),
             filename=REGISTRY_FILENAME,
             caption=TEXT_REGISTRY_FILE_CAPTION,
             disable_notification=True,
@@ -1642,8 +1791,11 @@ def register_callback(update: Update, context: CallbackContext) -> None:
     # Сначала записываем и сохраняем, и только потом подтверждаем человеку —
     # иначе можно сказать «готово» там, где на самом деле ничего не сохранилось.
     registrations.setdefault(key, set()).add(user.id)
+    remember_person(user.id, user.full_name, user.username)
+    signed_at[(key, user.id)] = now_msk()
     if not save_registry(context.bot):
         registrations[key].discard(user.id)
+        signed_at.pop((key, user.id), None)
         query.edit_message_text(TEXT_REGISTER_FAILED, parse_mode='HTML')
         return
 
@@ -1777,6 +1929,7 @@ def person_link(bot, user_id: int) -> str:
     if name is None:
         try:
             chat = bot.get_chat(user_id)
+            remember_person(user_id, chat.full_name, chat.username)
             name = (chat.full_name or "").strip() or f"id {user_id}"
             if chat.username:
                 name = f"{name} (@{chat.username})"
@@ -2264,6 +2417,11 @@ def main() -> None:
         # На холодном старте подчищаем старые записи тех, кто уже перезаписался.
         # Сервис просыпается часто, поэтому список приходит в порядок сам.
         save_registry(updater.bot)
+
+    if registry_loaded:
+        # Имена тех, кто записался до 25.09, — в фоне, чтобы не держать запуск
+        threading.Thread(target=backfill_names, args=(updater.bot,),
+                         daemon=True).start()
 
     # Ежедневная проверка: не начинается ли вебинар завтра
     updater.job_queue.run_daily(
