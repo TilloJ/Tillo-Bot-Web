@@ -352,11 +352,19 @@ TEXT_WHO_CARD = "👤 {user}\n<i>записан(а) на {dates}</i>"
 
 # Внизу каждой страницы /who. {first}–{last} — какие по счёту карточки
 # показаны, {total} — сколько всего людей, {next} — что написать после /who,
-# чтобы получить следующую страницу. Телеграм не даёт боту слать в группу
-# больше ~20 сообщений в минуту, поэтому следующую — через минуту.
+# чтобы получить следующую страницу. Сама она не придёт — её надо попросить.
+# Телеграм не даёт боту слать в группу больше ~20 сообщений в минуту, а
+# страница — это 17, поэтому просить следующую — не раньше чем через минуту.
 TEXT_WHO_PAGE_MORE = (
     "Показаны {first}–{last} из {total}.\n"
-    "Следующие — через минуту: <b>/who {next}</b>"
+    "Чтобы увидеть следующие, отправьте <b>/who {next}</b> — но не раньше "
+    "чем через минуту: чаще Телеграм не даёт боту писать в группу."
+)
+
+# Если следующую страницу попросили слишком рано. {seconds} — сколько ждать.
+TEXT_WHO_WAIT = (
+    "Подождите ещё {seconds} сек. и отправьте команду снова: Телеграм не даёт "
+    "боту слать в группу больше ~20 сообщений в минуту, а страница — это 17."
 )
 
 TEXT_WHO_PAGE_LAST = "Показаны {first}–{last} из {total} — это все."
@@ -1547,6 +1555,11 @@ def keys_for(wanted: str):
     return keys
 
 
+# Когда /who закончил последнюю страницу. Следующую раньше чем через минуту
+# не шлём: Телеграм оборвёт её на середине без всякого объяснения.
+_last_who_page = 0.0
+
+
 def who_command(update: Update, context: CallbackContext) -> None:
     """/who [ДД.ММ.ГГГГ [ЧЧ:ММ]] [страница] — карточки записавшихся по WHO_MAX
     на страницу, по именам можно нажимать."""
@@ -1602,10 +1615,29 @@ def who_command(update: Update, context: CallbackContext) -> None:
     first = (page - 1) * WHO_MAX
     chunk = people[first:first + WHO_MAX]
 
-    update.message.reply_text(
-        TEXT_WHO_HEADER.format(
-            scope=TEXT_WHO_SCOPE.format(date=label) if label else ""),
-        parse_mode='HTML', disable_web_page_preview=True)
+    global _last_who_page
+    wait = 60 - (time.time() - _last_who_page)
+    if wait > 0:
+        update.message.reply_text(TEXT_WHO_WAIT.format(seconds=int(wait) + 1))
+        return
+    try:
+        _send_who_page(update, context, label, target, page, people, chunk,
+                       first, on_dates)
+    finally:
+        _last_who_page = time.time()
+
+
+def _send_who_page(update, context, label, target, page, people, chunk,
+                   first, on_dates) -> None:
+    """Заголовок, карточки и подпись одной страницы /who."""
+    try:
+        update.message.reply_text(
+            TEXT_WHO_HEADER.format(
+                scope=TEXT_WHO_SCOPE.format(date=label) if label else ""),
+            parse_mode='HTML', disable_web_page_preview=True)
+    except TelegramError as e:
+        logger.error("Не удалось отправить заголовок /who: %s", e)
+        return
 
     # По карточке на человека: в каждой ровно один, поэтому ответ командой
     # /dm всегда однозначен.
