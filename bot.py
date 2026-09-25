@@ -170,7 +170,7 @@ TEXT_REMINDER = (
     "Ждём вас 🙂\n\n"
     "Напоминаем, что вебинар 30 сентября пройдет в 11:00 или 19:00 по московскому времени. Это будет один и тот же вебинар — два времени для вашего удобства.\n\n"
     "Если вы хотите прийти в другое время — просто зайдите в меню бота и зарегистрируйтесь еще раз.\n\n"
-    "А еще мы через бот собираем вопросы для Екатерины, на которые она ответит на вебинаре. Есть вопрос - бегите в меню бота, жмите 'Вопросы для спикера' и присылайте свой вопрос.\n\n"
+    "А еще мы через бот собираем вопросы для Екатерины, на которые она ответит на вебинаре. Есть вопрос - бегите в меню бота, жмите 'Вопросы для спикера' и присылайте свой вопрос."
 )
 
 # Чем заменяется {when} — зависит от того, за сколько до вебинара напоминаем
@@ -267,6 +267,15 @@ TEXT_BROADCAST_START_ONE = (
 
 TEXT_BROADCAST_DONE = "Готово. Доставлено: {sent}. Не доставлено: {failed}."
 
+# Первое слово после /broadcast похоже на дату, но бот его не понял.
+# Тогда ничего не отправляем: иначе ссылка для одного вебинара ушла бы всем.
+TEXT_BROADCAST_BAD_DATE = (
+    "Первое слово похоже на дату, но я его не понял: «{token}». "
+    "Ничего не отправлено.\n"
+    "Дату пишите так: <b>/broadcast 30.09.2026 11:00 текст</b>. "
+    "Если это не дата — начните текст с другого слова."
+)
+
 # ---------------------------------------------------------------------------
 # Список записавшихся (/who)
 # ---------------------------------------------------------------------------
@@ -296,16 +305,32 @@ TEXT_WHO_SCOPE = " на {date}"
 # Карточка одного человека — ровно один человек, поэтому /dm не ошибётся
 TEXT_WHO_CARD = "👤 {user}\n<i>записан(а) на {dates}</i>"
 
-TEXT_WHO_TOO_MANY = (
-    "Записавшихся уже {count} — столько карточек в чат не поместится.\n"
-    "Укажите дату, например: <b>/who {example}</b>"
+# Внизу каждой страницы /who. {first}–{last} — какие по счёту карточки
+# показаны, {total} — сколько всего людей, {next} — что написать после /who,
+# чтобы получить следующую страницу. Телеграм не даёт боту слать в группу
+# больше ~20 сообщений в минуту, поэтому следующую — через минуту.
+TEXT_WHO_PAGE_MORE = (
+    "Показаны {first}–{last} из {total}.\n"
+    "Следующие — через минуту: <b>/who {next}</b>"
+)
+
+TEXT_WHO_PAGE_LAST = "Показаны {first}–{last} из {total} — это все."
+
+TEXT_WHO_NO_PAGE = "Страницы {page} нет — всего страниц: {pages}."
+
+# /who с непонятными словами после команды. {text} — что не удалось разобрать.
+TEXT_WHO_BAD_ARGS = (
+    "Не понял «{text}».\n"
+    "Можно так: <b>/who</b> — все, <b>/who 30.09.2026</b> — на эту дату, "
+    "<b>/who 30.09.2026 11:00</b> — на этот вебинар. "
+    "Число в конце — номер страницы: <b>/who 30.09.2026 11:00 2</b>"
 )
 
 TEXT_WHO_NO_WEBINAR = "Вебинара {date} в списке нет."
 
 TEXT_WHO_UNKNOWN_NAME = "без имени"
 
-WHO_MAX = 15   # больше карточек за раз Телеграм не даст отправить подряд
+WHO_MAX = 15   # карточек на странице /who: больше за раз Телеграм не даст отправить подряд
 
 # ---------------------------------------------------------------------------
 # Инструкция для участников рабочей группы (/help внутри группы)
@@ -337,7 +362,8 @@ TEXT_ADMIN_HELP = (
     "с именем, на которое можно нажать.\n"
     "<i>Когда нужно:</i> чтобы написать конкретному человеку — ответьте "
     "командой /dm на его карточку. Можно указать дату и время: "
-    "/who 30.09.2026 19:00\n\n"
+    "/who 30.09.2026 19:00. Карточки идут по 15; число в конце — номер "
+    "страницы: /who 30.09.2026 19:00 2\n\n"
 
     "<b>/cleanup</b> — освободить место в списке, убрав записи на прошедшие "
     "вебинары. Сначала покажет, что именно удалит, и спросит подтверждение.\n"
@@ -1346,16 +1372,26 @@ def person_link(bot, user_id: int) -> str:
 
 
 _TIME_ONLY = re.compile(r"^\d{1,2}[:.]\d{2}$")
+# Так вебинар записан внутри бота: 30.09.2026-1100. Раз человек это где-то
+# видел, он так и напишет — понимаем и такую запись.
+_KEY_FORM = re.compile(r"^(\d{2}\.\d{2}\.\d{4})-(\d{1,2})(\d{2})$")
+# Похоже на дату, но не распозналось: 30.9.2026, 30.09.26, 30.09
+_DATE_LIKE = re.compile(r"^\d{1,2}\.\d{1,2}")
 
 
 def split_target(text: str):
     """'30.09.2026 19:00 текст' -> ('30.09.2026', '19:00', 'текст').
 
-    Дата и время необязательны; что не распознали — остаётся текстом.
+    Понимает и '30.09.2026-1900 текст'. Дата и время необязательны; что не
+    распознали — остаётся текстом.
     """
     date_str = time_str = ""
     first, _, tail = text.partition(' ')
-    if _DATE_ONLY.match(first):
+    key_form = _KEY_FORM.match(first)
+    if key_form:
+        date_str, text = key_form.group(1), tail.strip()
+        time_str = f"{key_form.group(2)}:{key_form.group(3)}"
+    elif _DATE_ONLY.match(first):
         date_str, text = first, tail.strip()
         second, _, tail2 = text.partition(' ')
         if _TIME_ONLY.match(second):
@@ -1375,21 +1411,33 @@ def keys_for(wanted: str):
 
 
 def who_command(update: Update, context: CallbackContext) -> None:
-    """/who [ДД.ММ.ГГГГ] — свежий список записавшихся, по именам можно нажимать."""
+    """/who [ДД.ММ.ГГГГ [ЧЧ:ММ]] [страница] — карточки записавшихся по WHO_MAX
+    на страницу, по именам можно нажимать."""
     if not is_admin_chat(update):
         return
 
-    w_date, w_time, _extra = split_target(
+    w_date, w_time, extra = split_target(
         update.message.text.partition(' ')[2].strip())
+    page = 1
+    if re.fullmatch(r"[0-9]+", extra):
+        page, extra = int(extra), ""
+    if extra or page < 1:
+        update.message.reply_text(
+            TEXT_WHO_BAD_ARGS.format(text=html.escape(extra or str(page))),
+            parse_mode='HTML')
+        return
+
     wanted = f"{w_date}-{re.sub(r'[^0-9]', '', w_time)}" if w_time else w_date
+    target = f"{w_date} {w_time}" if w_time else w_date   # как пишут после /who
+    label = f"{w_date} в {w_time}" if w_time else w_date  # как показываем людям
     if wanted:
         dates = keys_for(wanted)
         if not dates:
-            update.message.reply_text(TEXT_WHO_NO_WEBINAR.format(date=wanted))
+            update.message.reply_text(TEXT_WHO_NO_WEBINAR.format(date=label))
             return
         if not any(registrations.get(k) for k in dates):
             update.message.reply_text(
-                TEXT_BROADCAST_EMPTY_ONE.format(date=wanted))
+                TEXT_BROADCAST_EMPTY_ONE.format(date=label))
             return
     else:
         dates = sorted(
@@ -1400,26 +1448,31 @@ def who_command(update: Update, context: CallbackContext) -> None:
         update.message.reply_text(TEXT_WHO_EMPTY)
         return
 
-    total = sum(len(registrations.get(d, ())) for d in dates)
-    if total > WHO_MAX:
-        update.message.reply_text(
-            TEXT_WHO_TOO_MANY.format(count=total, example=dates[0]),
-            parse_mode='HTML')
-        return
-
-    update.message.reply_text(
-        TEXT_WHO_HEADER.format(
-            scope=TEXT_WHO_SCOPE.format(date=wanted) if wanted else ""),
-        parse_mode='HTML', disable_web_page_preview=True)
-
-    # По карточке на человека: в каждой ровно один, поэтому ответ командой
-    # /dm всегда однозначен.
+    # Каждый человек — один раз, сколько бы вебинаров у него ни было.
     on_dates = {}
     for date_str in dates:
         for uid in registrations.get(date_str, set()):
             on_dates.setdefault(uid, []).append(date_str)
 
-    for uid in sorted(on_dates, key=lambda u: person_link(context.bot, u)):
+    # Порядок по id: он не меняется между вызовами, так что страницы не
+    # перемешиваются, а имена узнаём только у тех, кто на этой странице.
+    people = sorted(on_dates, key=str)
+    pages = -(-len(people) // WHO_MAX)
+    if page > pages:
+        update.message.reply_text(
+            TEXT_WHO_NO_PAGE.format(page=page, pages=pages))
+        return
+    first = (page - 1) * WHO_MAX
+    chunk = people[first:first + WHO_MAX]
+
+    update.message.reply_text(
+        TEXT_WHO_HEADER.format(
+            scope=TEXT_WHO_SCOPE.format(date=label) if label else ""),
+        parse_mode='HTML', disable_web_page_preview=True)
+
+    # По карточке на человека: в каждой ровно один, поэтому ответ командой
+    # /dm всегда однозначен.
+    for uid in chunk:
         try:
             update.message.reply_text(
                 TEXT_WHO_CARD.format(
@@ -1431,8 +1484,18 @@ def who_command(update: Update, context: CallbackContext) -> None:
                 parse_mode='HTML', disable_web_page_preview=True)
         except TelegramError as e:
             logger.error("Не удалось отправить карточку %s: %s", uid, e)
-            break
+            return
         time.sleep(0.3)   # лимит Телеграма на сообщения в группу
+
+    last = first + len(chunk)
+    if last < len(people):
+        footer = TEXT_WHO_PAGE_MORE.format(
+            first=first + 1, last=last, total=len(people),
+            next=f"{target} {page + 1}".strip())
+    else:
+        footer = TEXT_WHO_PAGE_LAST.format(
+            first=first + 1, last=last, total=len(people))
+    update.message.reply_text(footer, parse_mode='HTML')
 
 
 def records_phrase(count: int) -> str:
@@ -1587,6 +1650,15 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
 
     if not rest:
         update.message.reply_text(TEXT_BROADCAST_USAGE, parse_mode='HTML')
+        return
+
+    # «30.9.2026 текст» датой не распознаётся — без этой проверки рассылка
+    # ушла бы всем, вместе со ссылкой, которая нужна одному вебинару.
+    first_word = rest.partition(' ')[0]
+    if not date_str and _DATE_LIKE.match(first_word):
+        update.message.reply_text(
+            TEXT_BROADCAST_BAD_DATE.format(token=html.escape(first_word)),
+            parse_mode='HTML')
         return
 
     if date_str:
