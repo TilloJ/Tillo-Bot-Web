@@ -572,6 +572,17 @@ TEXT_STATS_SCHEDULE_WAKE = (
 )
 TEXT_STATS_SCHEDULE_NO_WAKE = "Напоминания выключены — будильники не нужны."
 
+# Строчка в /stats: работает ли на самом деле проверка «перед началом».
+# {minutes} — как часто она идёт, {at} — во сколько следующая, {tz} — пояс.
+TEXT_STATS_SOON_JOB_ON = (
+    "Проверка «перед началом» работает: каждые {minutes} мин., пока сервис не "
+    "спит, следующая — в {at} ({tz})."
+)
+TEXT_STATS_SOON_JOB_OFF = (
+    "⚠️ Проверка «перед началом» не запущена — напоминание перед началом НЕ "
+    "уйдёт. Напишите разработчику."
+)
+
 # Записи из старого формата, которые не привязаны к вебинару
 TEXT_STATS_UNASSIGNED = (
     "⚠️ Не привязаны к вебинару (записаны до того, как в этот день появился "
@@ -622,6 +633,26 @@ TEXT_FILE_SHEET_ARCHIVE = "Архив"       # на прошедшие
 TEXT_GROUP_REGISTRY_UNREADABLE = (
     "⚠️ Не могу прочитать файл со списком записавшихся: {error}\n"
     "Пока это так, новые регистрации НЕ сохраняются. Напишите разработчику."
+)
+
+# В группе закреплено чужое сообщение, и бот не видит за ним свой список:
+# Телеграм показывает боту только последнее закреплённое сообщение.
+TEXT_GROUP_FOREIGN_PIN = (
+    "⚠️ В этой группе закреплено другое сообщение, и из-за него бот не видит "
+    "список записавшихся: Телеграм показывает боту только последнее "
+    "закреплённое.\n"
+    "Пока так, регистрации не сохраняются и напоминания не уходят. Открепите "
+    "это сообщение — последним закреплённым должен быть "
+    "«📋 СПИСОК ЗАРЕГИСТРИРОВАННЫХ»."
+)
+
+# Пора отправлять напоминание, а список записавшихся прочитать не удалось.
+# {minutes} — через сколько минут бот попробует снова.
+TEXT_GROUP_REMINDERS_BLOCKED = (
+    "⚠️ Пора отправлять напоминание, но бот не смог прочитать список "
+    "записавшихся — поэтому сейчас оно никому не ушло и отправленным не "
+    "считается. Напоминание перед началом бот попробует снова через "
+    "{minutes} мин.; напоминание за несколько дней повторите командой /check."
 )
 
 # В расписании не заполнена ссылка на зум, а текст напоминания её ждёт.
@@ -853,6 +884,7 @@ DELETE_OLD_REGISTRY_FILES = True
 # сохранения сразу могли бы записать в файл и в сообщение разное.
 _save_lock = threading.Lock()
 _read_failures = 0           # сколько раз подряд не удалось прочитать файл
+_reported_foreign_pin = False    # уже сказали группе, что закреплено чужое
 
 _POINTER_LINE = re.compile(r"^(FILE|PREV):(\d+):(\S+)$")
 
@@ -1241,6 +1273,7 @@ def load_registry(bot) -> bool:
     """
     global registry_message_id, registry_loaded, file_pointer, prev_pointer
     global _read_failures, registry_file_format, pin_needs_rewrite
+    global _reported_foreign_pin
 
     if not ADMIN_CHAT_ID:
         logger.error(
@@ -1257,10 +1290,23 @@ def load_registry(bot) -> bool:
         return False
 
     pinned = chat.pinned_message
-    if not (pinned and pinned.text and pinned.text.startswith(REGISTRY_HEADER)):
+    if pinned is None:
         logger.info("Закреплённого списка нет — будет создан при первой регистрации")
         registry_loaded = True
         return True
+    if not (pinned.text and pinned.text.startswith(REGISTRY_HEADER)):
+        # Закреплено чужое сообщение. Телеграм отдаёт боту только последнее
+        # закреплённое, и список мог оказаться под ним. Считать это пустым
+        # списком нельзя: следующая регистрация создала бы новый список поверх
+        # всех. Новым список бывает, только когда не закреплено ничего.
+        registry_loaded = False
+        logger.error("Закреплено не наше сообщение (%s) — список за ним не "
+                     "виден, НИЧЕГО не пишу", pinned.message_id)
+        if not _reported_foreign_pin:
+            _reported_foreign_pin = True
+            notify_group(bot, TEXT_GROUP_FOREIGN_PIN)
+        return False
+    _reported_foreign_pin = False
 
     registry_message_id = pinned.message_id
     regs, sent, warn, pointers, total = parse_registry(pinned.text)
@@ -1723,8 +1769,45 @@ def report_not_sent(bot, tag: str, label: str, failed: int) -> None:
         date=label, failed=failed))
 
 
+# Как часто, пока сервис не спит, проверять, не пора ли напоминание «перед
+# началом». Имя — чтобы /stats нашёл эту проверку в расписании.
+SOON_CHECK_MINUTES = 5
+SOON_JOB_NAME = "soon"
+
+# Напоминания рассылаются по одному: «перед началом» проверяется в своём
+# потоке, и ручной /check в ту же минуту отправил бы то же самое ещё раз —
+# отметка «отправлено» ставится только после всей рассылки.
+_reminder_lock = threading.Lock()
+_reported_blocked = False    # уже сказали группе, что список не прочитан
+
+
+def registry_ready(bot) -> bool:
+    """Прочитан ли список — перед тем как решать, кому напоминать.
+
+    Если на холодном старте чтение сорвалось, в памяти пусто, и напоминание
+    решило бы, что записавшихся нет, — и молча не ушло бы никому. Поэтому
+    перечитываем; не вышло — один раз говорим группе и ничего не отмечаем.
+    """
+    global _reported_blocked
+    with _save_lock:          # чтобы чтение не разминулось с сохранением
+        ok = registry_loaded or load_registry(bot)
+    if ok:
+        _reported_blocked = False
+    elif not _reported_blocked:
+        _reported_blocked = True
+        notify_group(bot, TEXT_GROUP_REMINDERS_BLOCKED.format(
+            minutes=SOON_CHECK_MINUTES))
+    return ok
+
+
 def send_reminders(bot, today: datetime.date = None) -> int:
-    """Проверяет, есть ли вебинар завтра, и если да — рассылает напоминание."""
+    """Напоминания «за N дней» — у каждого вебинара за столько дней, сколько
+    указано в REMINDER_DAYS. Возвращает, скольким людям ушло."""
+    with _reminder_lock:
+        return _send_reminders(bot, today)
+
+
+def _send_reminders(bot, today: datetime.date = None) -> int:
     if today is None:
         today = today_local()
 
@@ -1737,6 +1820,10 @@ def send_reminders(bot, today: datetime.date = None) -> int:
         days_left = (webinar_date - today).days
         if days_left not in REMINDER_DAYS:
             continue
+        # Список — раньше отметок: отметки «отправлено» лежат в нём же, и без
+        # него уже отправленное напоминание ушло бы второй раз
+        if not registry_ready(bot):
+            return total
 
         key = webinar_key(w)
         tag = f"d{days_left}"
@@ -1796,6 +1883,11 @@ def send_start_reminders(bot, now: datetime.datetime = None) -> int:
     проснуться в любой момент внутри окна — напоминание всё равно уйдёт,
     и ровно один раз.
     """
+    with _reminder_lock:
+        return _send_start_reminders(bot, now)
+
+
+def _send_start_reminders(bot, now: datetime.datetime = None) -> int:
     if now is None:
         now = datetime.datetime.now(TIMEZONE)
 
@@ -1810,6 +1902,9 @@ def send_start_reminders(bot, now: datetime.datetime = None) -> int:
         minutes_left = (start - now).total_seconds() / 60
         if not 0 < minutes_left <= MINUTES_BEFORE_START:
             continue
+        # Список — раньше отметок (см. _send_reminders)
+        if not registry_ready(bot):
+            return total
 
         key = webinar_key(w)
         if sent_tag(key, "soon") in reminded_keys:
@@ -2054,6 +2149,18 @@ def stats_command(update: Update, context: CallbackContext) -> None:
                                               tz=TIMEZONE_LABEL)
               if times else TEXT_STATS_SCHEDULE_NO_WAKE),
     )
+    if REMINDER_BEFORE_START:
+        # Не «должна работать», а работает ли: берём из настоящего расписания.
+        # Признак — время следующего запуска (у задачи на паузе его нет);
+        # .enabled у найденной задачи в PTB 13 всегда False, на него не смотрим.
+        jobs = (context.job_queue.get_jobs_by_name(SOON_JOB_NAME)
+                if context.job_queue else ())
+        if jobs and jobs[0].next_t:
+            text += "\n\n" + TEXT_STATS_SOON_JOB_ON.format(
+                minutes=SOON_CHECK_MINUTES, tz=TIMEZONE_LABEL,
+                at=jobs[0].next_t.astimezone(TIMEZONE).strftime("%H:%M"))
+        else:
+            text += "\n\n" + TEXT_STATS_SOON_JOB_OFF
 
     text += "\n\n" + TEXT_STATS_FILE
 
@@ -2597,7 +2704,7 @@ def main() -> None:
         threading.Thread(target=backfill_names, args=(updater.bot,),
                          daemon=True).start()
 
-    # Ежедневная проверка: не начинается ли вебинар завтра
+    # Раз в день: не пора ли напоминание «за N дней»
     updater.job_queue.run_daily(
         daily_job,
         time=datetime.time(hour=REMINDER_HOUR, minute=REMINDER_MINUTE,
@@ -2605,6 +2712,12 @@ def main() -> None:
     )
     logger.info("Ежедневная проверка напоминаний запланирована на %02d:%02d (%s)",
                 REMINDER_HOUR, REMINDER_MINUTE, TIMEZONE_LABEL)
+    # И каждые несколько минут, пока сервис не спит: не начинается ли вебинар
+    # совсем скоро. Без этой строки напоминание «перед началом» не уходит
+    # вовсе — с 16.09 до 28.09 функция была, а в расписании её не было.
+    updater.job_queue.run_repeating(
+        soon_job, interval=SOON_CHECK_MINUTES * 60, first=30,
+        name=SOON_JOB_NAME)
 
     external_url = os.environ.get("RENDER_EXTERNAL_URL")
     port = int(os.environ.get("PORT", "10000"))
