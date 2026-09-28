@@ -1,4 +1,3 @@
-import csv
 import datetime
 import html
 import io
@@ -871,24 +870,13 @@ registry_loaded = False
 # Предела у списка больше нет: файл бот может скачать до 20 МБ — это десятки
 # тысяч записей. (Пока список жил в самом закреплённом сообщении, пределом
 # были его 4096 символов, и бот предупреждал на 80% и 95%.)
-warned_levels = set()        # старые отметки WARN: — читаем и храним как есть
 
 REGISTRY_FILENAME = "registry.xlsx"
-# 25.09 вечером список был в CSV — его бот ещё умеет прочитать и переписать
-CSV_DELIMITER = ";"
-# В каком виде был файл при последнем чтении: "xlsx", "csv", "text" или None.
-# Если не в xlsx — бот перепишет его сразу после запуска.
-registry_file_format = None
-# В закреплённом сообщении ещё лежит копия списка (так было до 25.09 18:16).
-# Новый код её не пишет, поэтому при старте перезаписываем сообщение сами —
-# иначе оно так и провисит со старым текстом до первой регистрации.
-pin_needs_rewrite = False
 # Имя и @username каждого, кто записался: id -> (имя, username).
 people = {}
 # Когда человек записался на вебинар: (ключ вебинара, id) -> '2026-09-25 17:24'
 # по Москве. У записавшихся до 25.09 этого нет — тогда время не хранилось.
 signed_at = {}
-BACKFILL_MAX = 300           # сколько имён узнавать у Телеграма за один запуск
 # Сообщение с файлом текущего списка и предыдущего: (message_id, file_id).
 file_pointer = None
 prev_pointer = None
@@ -1011,26 +999,6 @@ def all_subscribers() -> set:
     return everyone
 
 
-def registry_text(snap=None) -> str:
-    """Список в старом текстовом виде — он же копия в закреплённом сообщении.
-
-    snap — снимок registrations: сохранение строит из одного снимка и файл,
-    и сообщение, чтобы «Всего» в них не разошлось.
-    """
-    regs = registrations if snap is None else snap
-    everyone = set().union(*regs.values()) if regs else set()
-    lines = [REGISTRY_HEADER, f"Всего: {len(everyone)}"]
-    for key in sorted(regs,
-                      key=lambda k: (key_date(k) or datetime.date.max, k)):
-        ids = regs[key]
-        if ids:
-            lines.append(f"{key}:" + ",".join(str(i) for i in sorted(ids)))
-    lines.append("SENT:" + ",".join(sorted(reminded_keys)))
-    if warned_levels:
-        lines.append("WARN:" + ",".join(str(l) for l in sorted(warned_levels)))
-    return "\n".join(lines)
-
-
 def plural_ru(number: int, one: str, few: str, many: str) -> str:
     """Русские числительные: 1 регистрацию, 2 регистрации, 5 регистраций."""
     if number % 100 in (11, 12, 13, 14):
@@ -1044,14 +1012,15 @@ def plural_ru(number: int, one: str, few: str, many: str) -> str:
 
 
 def parse_registry(text: str):
-    """Разбирает текст списка — из закреплённого сообщения или из файла.
+    """Разбирает закреплённое сообщение: (отметки SENT, указатели, «Всего»).
 
-    Возвращает (записи, отметки SENT, пороги WARN, указатели, «Всего»).
-    Память не трогает: это делает load_registry, дополняя, а не заменяя.
+    Самого списка в сообщении нет с 25.09 — он в файле, на который указывает
+    строка FILE. Память эта функция не трогает: это делает load_registry,
+    дополняя её, а не заменяя.
     """
-    regs, sent, warn, pointers, total = {}, set(), set(), {}, None
+    sent, pointers, total = set(), {}, None
     # Разбираем по признаку строки, а не по её номеру: так порядок строк
-    # и появление новых вебинаров ничего не ломают.
+    # ничего не ломает.
     for line in text.split("\n")[1:]:
         line = line.strip()
         if line.startswith("Всего:"):
@@ -1068,31 +1037,7 @@ def parse_registry(text: str):
             for d in line[5:].split(","):
                 if d.strip():
                     sent.add(migrate_sent(d.strip()))
-            continue
-
-        if line.startswith("WARN:"):
-            for lvl in line[5:].split(","):
-                if lvl.strip().isdigit():
-                    warn.add(int(lvl.strip()))
-            continue
-
-        match = _KEY_LINE.match(line)
-        if match:
-            key, ids_part = match.group(1), match.group(2)
-            ids = {int(p) for p in (x.strip() for x in ids_part.split(","))
-                   if p.isdigit()}
-            if ids:
-                regs.setdefault(migrate_key(key), set()).update(ids)
-            continue
-
-        # Старый формат: голая строка из id без даты. Регистрации тогда были
-        # общими, а не по вебинарам, поэтому переносить их некуда.
-        if line and line.replace(",", "").isdigit():
-            logger.warning(
-                "В списке найдена строка в старом формате (без дат) — она "
-                "пропущена: %s", line[:80],
-            )
-    return regs, sent, warn, pointers, total
+    return sent, pointers, total
 
 
 def download_registry(bot, file_id: str) -> bytes:
@@ -1112,17 +1057,6 @@ def now_msk() -> str:
 
 def remember_person(user_id: int, name: str, username: str) -> None:
     people[user_id] = ((name or "").strip(), username or "")
-
-
-# В CSV (25.09 вечером) имя, похожее на формулу Excel, хранилось с апострофом
-# впереди. При чтении такого файла апостроф снимаем.
-_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
-
-
-def csv_unsafe(value: str) -> str:
-    if value.startswith("'") and value[1:].startswith(_FORMULA_START):
-        return value[1:]
-    return value
 
 
 def fill_sheet(ws, keys, snap) -> None:
@@ -1214,32 +1148,6 @@ def parse_registry_xlsx(data: bytes):
     return regs, ppl, times
 
 
-def parse_registry_csv(data: str):
-    """Разбирает registry.csv. Возвращает (записи, люди, время записи).
-
-    Непонятная строка — ошибка, а не пропуск: это наш собственный файл, и
-    испорченный файл нельзя принять за прочитанный.
-    """
-    regs, ppl, times = {}, {}, {}
-    rows = csv.reader(io.StringIO(data), delimiter=CSV_DELIMITER)
-    next(rows, None)                      # заголовки столбцов
-    for row in rows:
-        if not row:
-            continue
-        key = row[1].strip() if len(row) > 1 else ""
-        if not row[0].strip().isdigit() or not _KEY_LINE.match(key + ":"):
-            raise ValueError(f"непонятная строка в файле: {';'.join(row[:2])[:60]}")
-        uid, key = int(row[0]), migrate_key(key)
-        regs.setdefault(key, set()).add(uid)
-        name = csv_unsafe(row[2]) if len(row) > 2 else ""
-        username = row[3].strip() if len(row) > 3 else ""
-        if name or username:
-            ppl[uid] = (name, username)
-        if len(row) > 4 and row[4].strip():
-            times[(key, uid)] = row[4].strip()
-    return regs, ppl, times
-
-
 def prune_past_sent(today: datetime.date = None) -> int:
     """Отметки о напоминаниях про прошедшие вебинары больше не нужны.
 
@@ -1254,33 +1162,6 @@ def prune_past_sent(today: datetime.date = None) -> int:
     return len(stale)
 
 
-def backfill_names(bot) -> None:
-    """Узнаёт имена тех, кто записался, пока бот имён не хранил (до 25.09).
-
-    Идёт в своём потоке после запуска, по одному запросу в 0,1 с, и в конце
-    один раз сохраняет список — уже с именами.
-    """
-    everyone = set().union(*snapshot().values()) if registrations else set()
-    missing = sorted(u for u in everyone if u not in people)
-    found = 0
-    for uid in missing[:BACKFILL_MAX]:
-        try:
-            chat = bot.get_chat(uid)
-            remember_person(uid, chat.full_name, chat.username)
-            found += 1
-        except TelegramError as e:
-            logger.info("Не удалось узнать имя %s: %s", uid, e)
-        time.sleep(0.1)
-    if missing:
-        logger.info("Имена: узнали %s из %s", found, len(missing))
-    # Сохраняем, если узнали новые имена, или файл ещё в старом виде (CSV,
-    # текст), или в закреплённом сообщении осталась копия списка. Всё это
-    # приводится в порядок сразу при старте, не дожидаясь регистрации.
-    if found or pin_needs_rewrite or (file_pointer
-                                      and registry_file_format != "xlsx"):
-        save_registry(bot)
-
-
 def load_registry(bot) -> bool:
     """Читает список записавшихся: закреплённое сообщение и файл, на который оно указывает.
 
@@ -1290,8 +1171,7 @@ def load_registry(bot) -> bool:
     пока группа была недоступна, переживает повторное чтение перед записью.
     """
     global registry_message_id, registry_loaded, file_pointer, prev_pointer
-    global _read_failures, registry_file_format, pin_needs_rewrite
-    global _reported_foreign_pin
+    global _read_failures, _reported_foreign_pin
 
     if not ADMIN_CHAT_ID:
         logger.error(
@@ -1327,38 +1207,23 @@ def load_registry(bot) -> bool:
     _reported_foreign_pin = False
 
     registry_message_id = pinned.message_id
-    regs, sent, warn, pointers, total = parse_registry(pinned.text)
-    # Список прямо в сообщении рядом со ссылкой на файл — это старый вид
-    pin_needs_rewrite = bool(regs) and "FILE" in pointers
+    sent, pointers, total = parse_registry(pinned.text)
 
-    if "FILE" not in pointers and total and not regs:
-        # Раньше список лежал в самом сообщении. Если ни списка в нём, ни
-        # ссылки на файл, а «Всего» говорит, что люди есть, — читать нечего.
+    if "FILE" not in pointers and total:
+        # «Всего» говорит, что люди есть, а ссылки на файл нет — читать нечего.
         # Считать это пустым списком нельзя: следующая запись затёрла бы всех.
         registry_loaded = False
-        logger.error("В закреплённом сообщении «Всего: %s», но ни списка, ни "
-                     "ссылки на файл в нём нет — НИЧЕГО не пишу", total)
+        logger.error("В закреплённом сообщении «Всего: %s», но ссылки на файл "
+                     "в нём нет — НИЧЕГО не пишу", total)
         return False
 
+    regs, ppl, times = {}, {}, {}
     if "FILE" in pointers:
-        # Список — в файле, и верим именно файлу. Копия в самом сообщении
-        # (если она ещё помещается) — только для отката на старую версию.
         try:
             data = download_registry(bot, pointers["FILE"][1])
-            if data[:2] == b"PK":                 # xlsx — это zip-архив
-                regs, ppl, times = parse_registry_xlsx(data)
-                fmt = "xlsx"
-            elif data.decode("utf-8-sig").startswith(REGISTRY_HEADER):
-                # Файл в старом текстовом виде (так было 25.09 до вечера):
-                # отметки SENT тогда жили в нём, а не в сообщении.
-                regs, fsent, fwarn, _, _ = parse_registry(data.decode("utf-8"))
-                sent |= fsent
-                warn |= fwarn
-                ppl, times = {}, {}
-                fmt = "text"
-            else:                                 # CSV — 25.09 вечером
-                regs, ppl, times = parse_registry_csv(data.decode("utf-8-sig"))
-                fmt = "csv"
+            if data[:2] != b"PK":            # xlsx — это zip-архив
+                raise ValueError("файл списка не в формате xlsx")
+            regs, ppl, times = parse_registry_xlsx(data)
             count = len(set().union(*regs.values())) if regs else 0
             # «Всего» записано в сообщение тем же сохранением, что и файл.
             # Файл, оборвавшийся на границе строки, разбирается без ошибок,
@@ -1367,8 +1232,8 @@ def load_registry(bot) -> bool:
                 raise ValueError(f"в файле {count} чел., а в закреплённом "
                                  f"сообщении — {total}")
         except Exception as e:     # сеть, битый файл, неизвестный формат
-            if not isinstance(e, (TelegramError, ValueError, UnicodeDecodeError,
-                                  csv.Error, zipfile.BadZipFile)):
+            if not isinstance(e, (TelegramError, ValueError,
+                                  zipfile.BadZipFile)):
                 logger.exception("Неожиданная ошибка при чтении файла списка")
             registry_loaded = False
             _read_failures += 1
@@ -1381,18 +1246,15 @@ def load_registry(bot) -> bool:
             return False
         file_pointer = pointers["FILE"]
         prev_pointer = pointers.get("PREV")
-        registry_file_format = fmt
 
-    for key, ids in regs.items():
-        registrations.setdefault(key, set()).update(ids)
-    if "FILE" in pointers:
+        for key, ids in regs.items():
+            registrations.setdefault(key, set()).update(ids)
         # то, что память уже знает (свежая регистрация), не затираем
         for uid, info in ppl.items():
             people.setdefault(uid, info)
         for pair, when in times.items():
             signed_at.setdefault(pair, when)
     reminded_keys.update(sent)
-    warned_levels.update(warn)
     _read_failures = 0
 
     logger.info(
@@ -1405,24 +1267,22 @@ def load_registry(bot) -> bool:
     return True
 
 
-def pin_text(text: str) -> str:
+def pin_text(snap) -> str:
     """Закреплённое сообщение: сколько человек, отметки о напоминаниях и
     указатель на файл. Сам список — в файле.
 
-    text — тот же снимок списка, что ушёл в файл, чтобы «Всего» в сообщении
+    snap — тот же снимок списка, что ушёл в файл, чтобы «Всего» в сообщении
     и файл никогда не расходились.
     """
-    pointer = []
+    everyone = set().union(*snap.values()) if snap else set()
+    lines = [REGISTRY_HEADER, f"Всего: {len(everyone)}", TEXT_REGISTRY_IN_FILE,
+             # Отметки о напоминаниях в файле не хранятся — только здесь
+             "SENT:" + ",".join(sorted(reminded_keys))]
     if file_pointer:
-        pointer.append(f"FILE:{file_pointer[0]}:{file_pointer[1]}")
+        lines.append(f"FILE:{file_pointer[0]}:{file_pointer[1]}")
     if prev_pointer:
-        pointer.append(f"PREV:{prev_pointer[0]}:{prev_pointer[1]}")
-    lines = text.split("\n")
-    total_line = next(l for l in lines if l.startswith("Всего:"))
-    # Отметки о напоминаниях в файле не хранятся — только здесь
-    marks = [l for l in lines if l.startswith(("SENT:", "WARN:"))]
-    return "\n".join([REGISTRY_HEADER, total_line, TEXT_REGISTRY_IN_FILE]
-                     + marks + pointer)
+        lines.append(f"PREV:{prev_pointer[0]}:{prev_pointer[1]}")
+    return "\n".join(lines)
 
 
 def with_retry(call):
@@ -1459,8 +1319,7 @@ def save_registry(bot) -> bool:
 
 
 def _save_registry(bot) -> bool:
-    global registry_message_id, file_pointer, prev_pointer, registry_file_format
-    global pin_needs_rewrite
+    global registry_message_id, file_pointer, prev_pointer
 
     if not ADMIN_CHAT_ID:
         # Режим без группы (локальный запуск): сохранять негде, но и падать
@@ -1486,7 +1345,6 @@ def _save_registry(bot) -> bool:
     # Один снимок на всё сохранение: из него и файл, и сообщение — чтобы
     # регистрация, пришедшая посередине, не развела их «Всего».
     snap = snapshot()
-    text = registry_text(snap)
     data = registry_xlsx(snap)
 
     # 1. Сначала новый файл. Не загрузился — ничего не поменялось.
@@ -1513,11 +1371,11 @@ def _save_registry(bot) -> bool:
             with_retry(lambda: bot.edit_message_text(
                 chat_id=ADMIN_CHAT_ID,
                 message_id=registry_message_id,
-                text=pin_text(text),
+                text=pin_text(snap),
             ))
         else:
             msg = with_retry(lambda: bot.send_message(
-                chat_id=ADMIN_CHAT_ID, text=pin_text(text)))
+                chat_id=ADMIN_CHAT_ID, text=pin_text(snap)))
             registry_message_id = msg.message_id
             bot.pin_chat_message(
                 chat_id=ADMIN_CHAT_ID,
@@ -1532,8 +1390,6 @@ def _save_registry(bot) -> bool:
     # 3. Файл старше предыдущего больше нигде не упомянут
     if old_prev and DELETE_OLD_REGISTRY_FILES:
         delete_quietly(bot, old_prev[0])
-    registry_file_format = "xlsx"
-    pin_needs_rewrite = False      # сообщение только что переписано начисто
     return True
 
 
@@ -2764,11 +2620,6 @@ def main() -> None:
         # На холодном старте подчищаем старые записи тех, кто уже перезаписался.
         # Сервис просыпается часто, поэтому список приходит в порядок сам.
         save_registry(updater.bot)
-
-    if registry_loaded:
-        # Имена тех, кто записался до 25.09, — в фоне, чтобы не держать запуск
-        threading.Thread(target=backfill_names, args=(updater.bot,),
-                         daemon=True).start()
 
     # Раз в день: не пора ли напоминание «за N дней»
     updater.job_queue.run_daily(
