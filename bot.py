@@ -1958,10 +1958,41 @@ def register(update: Update, context: CallbackContext) -> None:
     )
 
 
+def answer_tap(query) -> None:
+    """Гасит «часики» на кнопке. Не вышло — нажатие всё равно выполняем.
+
+    Обработчики идут по одному, а рассылка на полторы сотни человек занимает
+    полминуты и больше. Нажатие, дождавшееся своей очереди за ней, Телеграм
+    считает устаревшим и отвечает ошибкой — раньше она вылетала ДО записи,
+    и человек оставался незаписанным и без ответа.
+    """
+    try:
+        query.answer()   # без этого кнопка «крутится» у пользователя
+    except TelegramError as e:
+        logger.warning("Не удалось ответить на нажатие кнопки: %s", e)
+
+
+def tell_tapper(query, text: str) -> None:
+    """Ответ на нажатие: правим сообщение с кнопками, не вышло — пишем новым.
+
+    Ответ теряться не должен: к этому моменту регистрация уже сохранена, и
+    человек должен об этом узнать.
+    """
+    try:
+        query.edit_message_text(text, parse_mode='HTML')
+        return
+    except TelegramError as e:
+        logger.warning("Не удалось обновить сообщение с кнопками: %s", e)
+    try:
+        query.message.reply_text(text, parse_mode='HTML')
+    except (TelegramError, AttributeError) as e:
+        logger.error("Не удалось ответить на нажатие кнопки: %s", e)
+
+
 def register_callback(update: Update, context: CallbackContext) -> None:
     """Нажатие на кнопку выбора вебинара — здесь и происходит регистрация."""
     query = update.callback_query
-    query.answer()   # без этого кнопка «крутится» у пользователя
+    answer_tap(query)
 
     key = query.data.partition(":")[2]
     user = query.from_user
@@ -1970,12 +2001,12 @@ def register_callback(update: Update, context: CallbackContext) -> None:
 
     # Кнопку могли нажать на старом сообщении — вебинар мог уже начаться
     if w is None or not webinar_is_ahead(w, as_moment()):
-        query.edit_message_text(TEXT_REGISTER_GONE, parse_mode='HTML')
+        tell_tapper(query, TEXT_REGISTER_GONE)
         return
 
     already = registrations.get(key, set())
     if user.id in already:
-        query.edit_message_text(TEXT_REGISTER_ALREADY, parse_mode='HTML')
+        tell_tapper(query, TEXT_REGISTER_ALREADY)
         return
 
     # Сначала записываем и сохраняем, и только потом подтверждаем человеку —
@@ -1986,18 +2017,17 @@ def register_callback(update: Update, context: CallbackContext) -> None:
     if not save_registry(context.bot):
         registrations[key].discard(user.id)
         signed_at.pop((key, user.id), None)
-        query.edit_message_text(TEXT_REGISTER_FAILED, parse_mode='HTML')
+        tell_tapper(query, TEXT_REGISTER_FAILED)
         return
 
-    query.edit_message_text(
-        TEXT_REGISTER_DONE.format(date=w["date"], time=w["time"],
-                                  title=clean_title(w)),
-        parse_mode='HTML',
-    )
+    # Сначала группе, потом человеку: если ответ человеку почему-то не уйдёт,
+    # запись всё равно сохранена и в группе она видна.
     notify_group(context.bot, TEXT_GROUP_REGISTRATION.format(
         date=f"{w['date']} в {w['time']}",
         user=user_link(user), username=user_handle(user),
     ))
+    tell_tapper(query, TEXT_REGISTER_DONE.format(
+        date=w["date"], time=w["time"], title=clean_title(w)))
 
 
 def questions(update: Update, context: CallbackContext) -> None:
