@@ -344,6 +344,9 @@ TEXT_BROADCAST_USAGE = (
     "<b>/broadcast 30.09.2026</b> Привет!\n"
     "— всем в этот день; если вебинаров в нём несколько, бот попросит "
     "уточнить время.\n\n"
+    "<b>/broadcast 30.09.2026 все</b> Спасибо, что были с нами!\n"
+    "— всем сеансам этого дня сразу; кто записан на несколько, получит одно "
+    "сообщение. Ссылки на зум так не шлите — у каждого сеанса она своя.\n\n"
     "<b>Картинка, кружок, голосовое, гифка или видео</b>: выложите их сюда в "
     "группу и ответьте на это сообщение (reply) той же командой, например "
     "<b>/broadcast 30.09.2026 11:00</b> Идите все! Текст можно не писать.\n\n"
@@ -352,11 +355,21 @@ TEXT_BROADCAST_USAGE = (
 )
 
 TEXT_BROADCAST_PICK_TIME = (
-    "На {date} несколько вебинаров. Укажите время — иначе сообщение "
-    "(и ссылка на зум) уйдёт не тем:\n\n"
+    "На {date} несколько вебинаров. Укажите, кому: у каждого сеанса своя "
+    "ссылка на зум, поэтому угадывать бот не будет.\n\n"
     "{items}\n\n"
     "Например:\n<code>/broadcast {example} Ссылка на зум: https://...</code>"
 )
+
+# Последняя строчка в списке выше: всем сеансам дня сразу. {count} — сколько
+# человек получат (каждый — одно сообщение, даже если записан на несколько).
+TEXT_BROADCAST_PICK_ALL = (
+    "• <code>/broadcast {date} все</code> — всем сеансам сразу, {count} чел., "
+    "каждому одно сообщение. Для «спасибо» — да, для ссылок на зум — нет."
+)
+
+# Кому уходит «/broadcast ДД.ММ.ГГГГ все …» — так это видно в вопросе
+TEXT_BROADCAST_ALL_SESSIONS = "{date}, все сеансы"
 
 TEXT_BROADCAST_NO_WEBINAR = (
     "Вебинара {date} в списке нет. Проверьте дату — она пишется как "
@@ -499,6 +512,11 @@ TEXT_ADMIN_HELP = (
     "<i>Пример:</i> /broadcast 30.09.2026 19:00 Ссылка на зум: https://...\n"
     "Если в этот день вебинаров несколько, а время вы не указали, бот "
     "переспросит и ничего не отправит.\n\n"
+
+    "<b>/broadcast ДД.ММ.ГГГГ все текст</b> — всем сеансам этого дня сразу; "
+    "кто записан на несколько, получит одно сообщение.\n"
+    "<i>Пример:</i> /broadcast 30.09.2026 все Спасибо, что были с нами!\n"
+    "Ссылки на зум так не шлите — у каждого сеанса она своя.\n\n"
 
     "<b>Картинку, кружок, голосовое, гифку или видео</b> — выложите сюда и "
     "ответьте на это сообщение (reply) той же командой /broadcast; текст "
@@ -2210,6 +2228,22 @@ _KEY_FORM = re.compile(r"^(\d{2}\.\d{2}\.\d{4})-(\d{1,2})(\d{2})$")
 _DATE_LIKE = re.compile(r"^\d{1,2}\.\d{1,2}")
 
 
+# «/broadcast 30.09.2026 все текст» — всем сеансам этого дня сразу
+_ALL_SESSIONS = ("все", "всё")
+
+
+def next_word(text: str):
+    """Первое слово и всё остальное: '19:00\\nтекст' -> ('19:00', 'текст').
+
+    Слова разделяет любой пробел, в том числе перенос строки: текст рассылки
+    часто начинают с новой строки сразу после даты или времени.
+    """
+    parts = text.split(None, 1)
+    if not parts:
+        return "", ""
+    return parts[0], (parts[1].strip() if len(parts) > 1 else "")
+
+
 def split_target(text: str):
     """'30.09.2026 19:00 текст' -> ('30.09.2026', '19:00', 'текст').
 
@@ -2217,24 +2251,39 @@ def split_target(text: str):
     распознали — остаётся текстом.
     """
     date_str = time_str = ""
-    first, _, tail = text.partition(' ')
+    first, tail = next_word(text)
     key_form = _KEY_FORM.match(first)
     if key_form:
-        date_str, text = key_form.group(1), tail.strip()
+        date_str, text = key_form.group(1), tail
         time_str = f"{key_form.group(2)}:{key_form.group(3)}"
     elif _DATE_ONLY.match(first):
-        date_str, text = first, tail.strip()
-        second, _, tail2 = text.partition(' ')
+        date_str, text = first, tail
+        second, tail2 = next_word(text)
         if _TIME_ONLY.match(second):
-            time_str, text = second, tail2.strip()
+            time_str, text = second, tail2
     return date_str, time_str, text
 
 
+def key_time(key: str) -> str:
+    """Время сеанса из ключа: '30.09.2026-1900' -> '19:00'."""
+    w = find_webinar(key)
+    if w:
+        return w["time"]
+    digits = key.partition("-")[2]
+    return f"{digits[:2]}:{digits[2:]}" if len(digits) == 4 else digits
+
+
 def keys_for(wanted: str):
-    """Ключи вебинаров по дате (все в этот день) или по точному ключу."""
+    """Ключи вебинаров по дате (все в этот день) или по точному ключу.
+
+    Сеансы дня берём и из расписания, и из самого списка: сеанс, который уже
+    убрали из расписания, остаётся в списке со своими записавшимися.
+    """
     if find_webinar(wanted) and not _DATE_ONLY.match(wanted):
         return [wanted]
     keys = [webinar_key(w) for w in webinars_on(wanted)]
+    keys += sorted(k for k in list(registrations)
+                   if k.startswith(wanted + "-") and k not in keys)
     # запись из старого формата под самой датой — её тоже учитываем
     if wanted in registrations and wanted not in keys:
         keys.append(wanted)
@@ -2252,8 +2301,7 @@ def who_command(update: Update, context: CallbackContext) -> None:
     if not is_admin_chat(update):
         return
 
-    w_date, w_time, extra = split_target(
-        update.message.text.partition(' ')[2].strip())
+    w_date, w_time, extra = split_target(next_word(update.message.text)[1])
     page = 1
     if re.fullmatch(r"[0-9]+", extra):
         page, extra = int(extra), ""
@@ -2429,8 +2477,16 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
 
     # Первыми словами можно указать дату и время — тогда рассылка уйдёт
     # только тем, кто записан именно на этот вебинар.
-    date_str, time_str, rest = split_target(
-        update.message.text.partition(' ')[2].strip())
+    date_str, time_str, rest = split_target(next_word(update.message.text)[1])
+
+    # «все» сразу после даты (без времени) — всем сеансам этого дня. Только
+    # явно: без этого слова день с несколькими сеансами по-прежнему
+    # отклоняется, чтобы ссылка на зум не ушла не тем.
+    all_sessions = False
+    if date_str and not time_str:
+        word, tail = next_word(rest)
+        if word.casefold() in _ALL_SESSIONS:
+            all_sessions, rest = True, tail
 
     # Ответ на картинку, кружок и т.п. — разослать и её (текст не обязателен).
     # Ответ на файл, стикер или опрос — отказ: иначе ушёл бы один текст, без
@@ -2448,7 +2504,7 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
 
     # «30.9.2026 текст» датой не распознаётся — без этой проверки рассылка
     # ушла бы всем, вместе со ссылкой, которая нужна одному вебинару.
-    first_word = rest.partition(' ')[0]
+    first_word = next_word(rest)[0]
     if not date_str and _DATE_LIKE.match(first_word):
         update.message.reply_text(
             TEXT_BROADCAST_BAD_DATE.format(token=html.escape(first_word)),
@@ -2456,7 +2512,6 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
         return
 
     if date_str:
-        same_day = webinars_on(date_str)
         if time_str:
             key = f"{date_str}-{re.sub(r'[^0-9]', '', time_str)}"
             if not find_webinar(key) and key not in registrations:
@@ -2464,25 +2519,31 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
                     date=f"{date_str} в {time_str}"))
                 return
             keys = [key]
-        elif len(same_day) > 1:
-            # В рассылке почти всегда ссылка на зум, а она у каждого вебинара
-            # своя. Угадывать нельзя — просим уточнить время.
-            update.message.reply_text(
-                TEXT_BROADCAST_PICK_TIME.format(
-                    date=date_str,
-                    items="\n".join(
-                        f"• <code>/broadcast {date_str} {w['time']}</code> — "
-                        f"записано "
-                        f"{len(registrations.get(webinar_key(w), set()))} чел."
-                        for w in same_day),
-                    example=f"{date_str} {same_day[0]['time']}",
-                ), parse_mode='HTML')
-            return
         else:
+            # Все сеансы дня — из расписания и из самого списка
             keys = keys_for(date_str)
             if not keys:
                 update.message.reply_text(
                     TEXT_BROADCAST_NO_WEBINAR.format(date=date_str))
+                return
+            sessions = [k for k in keys if not _DATE_ONLY.match(k)]
+            if len(sessions) > 1 and not all_sessions:
+                # В рассылке почти всегда ссылка на зум, а она у каждого
+                # сеанса своя. Угадывать нельзя — просим указать время
+                # или прямо написать «все».
+                that_day = set()
+                for key in keys:
+                    that_day |= registrations.get(key, set())
+                items = [f"• <code>/broadcast {date_str} {key_time(k)}</code> — "
+                         f"записано {len(registrations.get(k, set()))} чел."
+                         for k in sessions]
+                items.append(TEXT_BROADCAST_PICK_ALL.format(
+                    date=date_str, count=len(that_day)))
+                update.message.reply_text(
+                    TEXT_BROADCAST_PICK_TIME.format(
+                        date=date_str, items="\n".join(items),
+                        example=f"{date_str} {key_time(sessions[0])}"),
+                    parse_mode='HTML')
                 return
         recipients = set()
         for key in keys:
@@ -2491,7 +2552,12 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
             update.message.reply_text(
                 TEXT_BROADCAST_EMPTY_ONE.format(date=date_str))
             return
-        label = f"{date_str} в {time_str}" if time_str else date_str
+        if time_str:
+            label = f"{date_str} в {time_str}"
+        elif all_sessions:
+            label = TEXT_BROADCAST_ALL_SESSIONS.format(date=date_str)
+        else:
+            label = date_str
     else:
         keys = None                               # всем записавшимся
         recipients = all_subscribers()
