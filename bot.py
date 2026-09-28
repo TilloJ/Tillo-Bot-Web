@@ -50,40 +50,50 @@ ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "0"))
 # Каждый вебинар идёт дважды в один день: утром и вечером. Это два разных
 # вебинара — у каждого свой список записавшихся, своё напоминание и своя
 # ссылка на зум. Время в название писать НЕ нужно, бот показывает его сам.
+#
+# "zoom" — ссылка именно на этот сеанс. Она попадёт в напоминание вместо
+# {zoom}. У утреннего и вечернего сеанса ссылки РАЗНЫЕ, поэтому каждая
+# лежит рядом со своим вебинаром. Пока не заполнили — оставьте "".
 WEBINARS = [
     {
         "date": "30.09.2026",
         "time": "11:00",
+        "zoom": "",
         "title": "Черепанова Екатерина: 5 ошибок, из-за которых здоровое "
                  "питание не становится образом жизни",
     },
     {
         "date": "30.09.2026",
         "time": "19:00",
+        "zoom": "",
         "title": "Черепанова Екатерина: 5 ошибок, из-за которых здоровое "
                  "питание не становится образом жизни",
     },
     {
         "date": "19.10.2026",
         "time": "11:00",
+        "zoom": "",
         "title": "Галеева Ирина: Упадок сил, выгорание или гормональный сбой? "
                  "Как понять, что происходит с организмом",
     },
     {
         "date": "19.10.2026",
         "time": "19:00",
+        "zoom": "",
         "title": "Галеева Ирина: Упадок сил, выгорание или гормональный сбой? "
                  "Как понять, что происходит с организмом",
     },
     {
         "date": "30.10.2026",
         "time": "11:00",
+        "zoom": "",
         "title": "Крумкач Ольга: Гормоны и энергия или женское здоровье "
                  "без мифов",
     },
     {
         "date": "30.10.2026",
         "time": "19:00",
+        "zoom": "",
         "title": "Крумкач Ольга: Гормоны и энергия или женское здоровье "
                  "без мифов",
     },
@@ -177,52 +187,86 @@ TEXT_UNKNOWN = (
     "Нажмите кнопку <b>Меню</b> слева от поля ввода, чтобы выбрать действие."
 )
 
-# Шаблон напоминания — один на все вебинары. Бот сам подставляет:
-#   {when}        «через 5 дней», «уже завтра» или «уже совсем скоро»
-#   {time}        время вебинара, {title} — его название
-#   {speaker}     имя спикера — часть названия до первого двоеточия
-#                 («Черепанова Екатерина»). Пишите так, чтобы имя стояло
-#                 в начальной форме: «{speaker} ответит», а не «для {speaker}».
-#   {other_times} абзац TEXT_REMINDER_OTHER_TIMES (он ниже) — или ничего
-# В фигурных скобках — только эти слова. Если там ошибка, напоминание всё
-# равно уйдёт, в упрощённом виде, а бот напишет об ошибке в группу.
-TEXT_REMINDER = (
+# ============================================================================
+# ТЕКСТЫ НАПОМИНАНИЙ — у каждого напоминания свой текст, все они здесь.
+#
+# Меняйте только то, что внутри кавычек. Бот подставит сам:
+#   {when}   «через 5 дней», «через 3 дня», «уже завтра», «уже совсем скоро»
+#   {time}   время вебинара: 11:00
+#   {title}  название вебинара из расписания выше
+#   {zoom}   ссылка на зум этого сеанса (поле "zoom" в расписании)
+# Всё остальное — даты, имя спикера, что угодно — пишите словами прямо
+# в тексте. Никаких других слов в фигурных скобках быть не должно.
+#
+# ⚠️ Тексты написаны под конкретный вебинар: в них словами вписаны дата и
+# имя спикера. Перед следующим вебинаром обновите их — бот этого не сделает.
+# ============================================================================
+
+TEXT_REMINDERS = {
+
+    # За 5 дней до вебинара
+    5: (
+        "Привет! Напоминаем: {when} в {time} вебинар\n\n"
+        "<b>{title}</b>\n\n"
+        "Ждём вас! 🙂\n\n"
+        "<b>30 сентября в 11:00 или 19:00</b> (московское время) разберем, "
+        "что мешает здоровым привычкам закрепиться — и как встроить здоровое "
+        "питание в вашу рутину.\n\n"
+        "💬 А ещё можно заранее задать вопрос Екатерине: заходите в меню "
+        "бота → <b>«Вопросы для спикера»</b>."
+    ),
+
+    # За 3 дня
+    3: (
+        "Привет! Напоминаем: {when} в {time} вебинар\n\n"
+        "<b>{title}</b>\n\n"
+        "Ждём вас! 🙂\n\n"
+        "<b>30 сентября в 11:00 или 19:00</b> (московское время) разберем, "
+        "что мешает здоровым привычкам закрепиться — и как встроить здоровое "
+        "питание в вашу рутину.\n\n"
+        "💬 Вопрос спикеру можно прислать заранее: меню бота → "
+        "<b>«Вопросы для спикера»</b>."
+    ),
+
+    # За 2 дня
+    2: (
+        "Привет! Напоминаем: {when} в {time} вебинар\n\n"
+        "<b>{title}</b>\n\n"
+        "Ждём вас! 🙂\n\n"
+        "Осталось совсем немного. Если хотите, чтобы Екатерина разобрала "
+        "именно ваш случай — пришлите вопрос заранее: меню бота → "
+        "<b>«Вопросы для спикера»</b>."
+    ),
+
+    # Накануне, за день. Здесь уже есть ссылка — заполните "zoom" в расписании
+    1: (
+        "Привет! Напоминаем: вебинар <b>{when}</b> в {time} "
+        "(по московскому времени)\n\n"
+        "<b>{title}</b>\n\n"
+        "🔗 Ссылка для входа: {zoom}\n\n"
+        "Сохраните её, чтобы не искать завтра. До встречи! 🙂"
+    ),
+}
+
+# Примерно за час до начала. Тоже со ссылкой.
+TEXT_REMINDER_SOON = (
+    "Привет! Вебинар начинается {when}, в {time} по московскому времени\n\n"
+    "<b>{title}</b>\n\n"
+    "🔗 Ссылка для входа: {zoom}\n\n"
+    "Ждём вас! 🙂"
+)
+
+# Если для какого-то числа из REMINDER_DAYS текст выше не написан —
+# уйдёт этот. Он же уходит, если в тексте со ссылкой ссылка не заполнена.
+TEXT_REMINDER_DEFAULT = (
     "Привет! Напоминаем: {when} в {time} вебинар\n\n"
     "<b>{title}</b>\n\n"
-    "Ждём вас 🙂"
-    "{other_times}\n\n"
-    "А еще мы через бот собираем вопросы — {speaker} ответит на них на "
-    "вебинаре. Есть вопрос - бегите в меню бота, жмите 'Вопросы для спикера' "
-    "и присылайте свой вопрос."
+    "Ждём вас! 🙂"
 )
 
-# Встаёт на место {other_times}, только если в этот день несколько сеансов,
-# и только в напоминаниях «за N дней» — в «скоро» его нет: другой сеанс
-# к тому времени может уже пройти. {date} — «30 сентября»,
-# {times} — «11:00 или 19:00».
-TEXT_REMINDER_OTHER_TIMES = (
-    "\n\nНапоминаем, что вебинар {date} пройдет в {times} по московскому "
-    "времени. Это один и тот же вебинар, просто в разное время — для вашего "
-    "удобства.\n\n"
-    "Если вы хотите прийти в другое время — просто зайдите в меню бота и "
-    "зарегистрируйтесь еще раз."
-)
-
-# Что встанет на место {speaker}, если в названии нет двоеточия
-TEXT_SPEAKER_FALLBACK = "спикер"
-
-# Запасной текст: уходит, если в TEXT_REMINDER ошибка в фигурных скобках.
+# Запасной текст: уходит, если в тексте выше ошибка в фигурных скобках.
 # Здесь можно использовать только {when}, {time} и {title}.
-TEXT_REMINDER_FALLBACK = (
-    "Привет! Напоминаем: {when} в {time} вебинар\n\n"
-    "<b>{title}</b>\n\n"
-    "Ждём вас 🙂"
-)
-
-# Месяцы для {date}: «30 сентября»
-MONTHS_GENITIVE = ("января", "февраля", "марта", "апреля", "мая", "июня",
-                   "июля", "августа", "сентября", "октября", "ноября",
-                   "декабря")
+TEXT_REMINDER_FALLBACK = TEXT_REMINDER_DEFAULT
 
 # Чем заменяется {when} — зависит от того, за сколько до вебинара напоминаем
 TEXT_WHEN_TOMORROW = "уже <b>завтра</b>"
@@ -439,14 +483,22 @@ TEXT_ADMIN_HELP = (
 
     "<b>Как добавить вебинар</b>\n"
     "Вебинары и все тексты бота лежат в файле bot.py в самом верху. "
-    "Дата строго в формате ДД.ММ.ГГГГ, время — по Москве. Напоминания "
-    "уходят сами — записывать их отдельно не нужно."
+    "Дата строго в формате ДД.ММ.ГГГГ, время — по Москве. Там же, рядом с "
+    "вебинаром, поле \"zoom\" — ссылка именно на этот сеанс: у утреннего и "
+    "вечернего они разные.\n\n"
+    "<b>Как поменять текст напоминания</b>\n"
+    "Всё в bot.py, блок TEXT_REMINDERS — у каждого напоминания свой текст: "
+    "за 5 дней, за 3, за 2 и накануне. Меняйте что угодно внутри кавычек; "
+    "{time}, {title} и {zoom} бот подставит сам. Напоминания уходят сами — "
+    "записывать их отдельно не нужно."
 )
 
 # Строчка в /stats: где лежит сам список
 TEXT_STATS_FILE = (
     "Список — в файле registry.xlsx: это последний файл от бота в этой "
-    "группе, его можно скачать и открыть в Excel."
+    "группе, его можно скачать и открыть в Excel.\n"
+    "<i>Тексты напоминаний написаны под конкретный вебинар — перед новым "
+    "вебинаром проверьте их в bot.py (TEXT_REMINDERS) и заполните ссылки.</i>"
 )
 
 TEXT_STATS_SCHEDULE = (
@@ -488,9 +540,8 @@ TEXT_GROUP_REMINDER_SENT = (
 TEXT_GROUP_REMINDER_TEMPLATE_BROKEN = (
     "⚠️ В тексте напоминания ошибка в фигурных скобках: {error}\n"
     "Напоминание всё равно ушло, но в упрощённом виде. Поправьте "
-    "TEXT_REMINDER или TEXT_REMINDER_OTHER_TIMES в bot.py: в скобках можно "
-    "писать только {{when}}, {{time}}, {{title}}, {{speaker}} и "
-    "{{other_times}}, а в TEXT_REMINDER_OTHER_TIMES — {{date}} и {{times}}."
+    "текст в TEXT_REMINDERS в bot.py: в фигурных скобках можно писать "
+    "только {{when}}, {{time}}, {{title}} и {{zoom}}."
 )
 
 # Список записавшихся хранится в файле registry.txt в этой группе.
@@ -520,12 +571,21 @@ TEXT_GROUP_REGISTRY_UNREADABLE = (
     "Пока это так, новые регистрации НЕ сохраняются. Напишите разработчику."
 )
 
+# В расписании не заполнена ссылка на зум, а текст напоминания её ждёт.
+# {webinar} — какой вебинар, {field} — что заполнить.
+TEXT_GROUP_NO_ZOOM = (
+    "⚠️ В тексте напоминания есть ссылка на зум, но у вебинара {webinar} "
+    "поле {field} пустое.\n"
+    "Напоминание ушло без ссылки. Заполните ссылку в расписании в bot.py — "
+    "у утреннего и вечернего сеанса она своя."
+)
+
 # Телеграм не понял HTML-разметку в тексте напоминания, и оно ушло тем же
 # текстом без форматирования. {error} — что именно ему не понравилось.
 TEXT_GROUP_REMINDER_MARKUP_BROKEN = (
     "⚠️ Телеграм не принял разметку в тексте напоминания: {error}\n"
     "Напоминание всё равно ушло — тем же текстом, только без жирного шрифта. "
-    "Проверьте теги в TEXT_REMINDER и TEXT_REMINDER_OTHER_TIMES в bot.py: "
+    "Проверьте теги в текстах напоминаний (TEXT_REMINDERS в bot.py): "
     "каждый &lt;b&gt; должен закрываться &lt;/b&gt;, а знаки &lt;, &gt; и "
     "&amp; вне тегов писать нельзя."
 )
@@ -1483,58 +1543,40 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False):
 # ============================================================================
 
 
-def date_words(date_str: str) -> str:
-    """'30.09.2026' -> '30 сентября' — для {date} в напоминании."""
-    d = parse_date(date_str)
-    if d is None:
-        return date_str
-    return f"{d.day} {MONTHS_GENITIVE[d.month - 1]}"
-
-
-def times_phrase(times) -> str:
-    """['11:00', '19:00'] -> '11:00 или 19:00'; три и больше — через запятую."""
-    times = list(times)
-    if len(times) <= 1:
-        return "".join(times)
-    return ", ".join(times[:-1]) + " или " + times[-1]
-
-
-def speaker_of(w) -> str:
-    """Имя спикера — часть названия до первого двоеточия."""
-    name, colon, _ = clean_title(w).partition(": ")
-    return name.strip() if colon and name.strip() else TEXT_SPEAKER_FALLBACK
-
-
 _TEMPLATE_ERRORS = (KeyError, IndexError, ValueError, AttributeError)
 
 
-def reminder_text(w, when: str, other_times: bool):
-    """Текст напоминания про вебинар w. Возвращает (текст, ошибка или None).
+def reminder_template(days_left):
+    """Какой текст брать: за столько-то дней или перед началом (days_left=None)."""
+    if days_left is None:
+        return TEXT_REMINDER_SOON
+    return TEXT_REMINDERS.get(days_left, TEXT_REMINDER_DEFAULT)
 
-    Шаблоны правит владелец, поэтому ошибка в фигурных скобках не должна
-    останавливать рассылку: без абзаца про другое время или по запасному
-    тексту — но напоминание уходит, а об ошибке узнаёт группа.
+
+def reminder_text(w, when: str, template: str):
+    """Текст напоминания про вебинар w. Возвращает (текст, что сказать группе).
+
+    Тексты правит владелец, поэтому ни ошибка в фигурных скобках, ни
+    незаполненная ссылка не должны останавливать рассылку: напоминание
+    уходит в упрощённом виде, а в группу уходит предупреждение.
     """
-    error = None
-    extra = ""
-    same_day = sorted(webinars_on(w["date"]),
-                      key=lambda x: parse_time(x.get("time")) or datetime.time.max)
-    times = list(dict.fromkeys(x["time"] for x in same_day))
-    if other_times and len(times) > 1:
-        try:
-            extra = TEXT_REMINDER_OTHER_TIMES.format(
-                date=date_words(w["date"]), times=times_phrase(times))
-        except _TEMPLATE_ERRORS as e:
-            logger.error("Ошибка в TEXT_REMINDER_OTHER_TIMES: %r", e)
-            error = e
+    zoom = (w.get("zoom") or "").strip()
+    note = None
+    if "{zoom}" in template and not zoom:
+        # Ссылки нет — шлём текст без неё, иначе люди получат «Ссылка: »
+        logger.error("У вебинара %s не заполнена ссылка на зум", webinar_key(w))
+        template = TEXT_REMINDER_DEFAULT
+        note = TEXT_GROUP_NO_ZOOM.format(
+            webinar=html.escape(key_label(webinar_key(w))), field="\"zoom\"")
     try:
-        return TEXT_REMINDER.format(
-            when=when, time=w["time"], title=clean_title(w),
-            speaker=speaker_of(w), other_times=extra), error
+        return template.format(when=when, time=w["time"],
+                               title=clean_title(w), zoom=zoom), note
     except _TEMPLATE_ERRORS as e:
-        logger.error("Ошибка в TEXT_REMINDER: %r — отправляю запасной текст", e)
-        return TEXT_REMINDER_FALLBACK.format(
-            when=when, time=w["time"], title=clean_title(w)), e
+        logger.error("Ошибка в тексте напоминания: %r — шлю запасной", e)
+        return (TEXT_REMINDER_FALLBACK.format(
+                    when=when, time=w["time"], title=clean_title(w)),
+                TEXT_GROUP_REMINDER_TEMPLATE_BROKEN.format(
+                    error=html.escape(str(e))))
 
 
 def warn_markup(bot, error) -> None:
@@ -1556,12 +1598,6 @@ def report_not_sent(bot, tag: str, label: str, failed: int) -> None:
     _reported_not_sent.add(tag)
     notify_group(bot, TEXT_GROUP_REMINDER_NOT_SENT.format(
         date=label, failed=failed))
-
-
-def warn_template(bot, error) -> None:
-    """Сообщает в группу, что в шаблоне напоминания ошибка."""
-    notify_group(bot, TEXT_GROUP_REMINDER_TEMPLATE_BROKEN.format(
-        error=html.escape(str(error))))
 
 
 def send_reminders(bot, today: datetime.date = None) -> int:
@@ -1596,11 +1632,11 @@ def send_reminders(bot, today: datetime.date = None) -> int:
                         key)
             continue
 
-        text, template_error = reminder_text(
-            w, when_phrase(days_left), other_times=True)
-        if template_error and "braces" not in warned:
-            warn_template(bot, template_error)
-            warned.add("braces")
+        text, note = reminder_text(w, when_phrase(days_left),
+                                   reminder_template(days_left))
+        if note and note not in warned:
+            notify_group(bot, note)
+            warned.add(note)
         sent, failed, markup_error = broadcast(bot, text, recipients,
                                                markup_fallback=True)
         if markup_error and "markup" not in warned:
@@ -1662,11 +1698,10 @@ def send_start_reminders(bot, now: datetime.datetime = None) -> int:
                         key)
             continue
 
-        text, template_error = reminder_text(
-            w, TEXT_WHEN_SOON, other_times=False)
-        if template_error and "braces" not in warned:
-            warn_template(bot, template_error)
-            warned.add("braces")
+        text, note = reminder_text(w, TEXT_WHEN_SOON, reminder_template(None))
+        if note and note not in warned:
+            notify_group(bot, note)
+            warned.add(note)
         sent, failed, markup_error = broadcast(bot, text, recipients,
                                                markup_fallback=True)
         if markup_error and "markup" not in warned:
