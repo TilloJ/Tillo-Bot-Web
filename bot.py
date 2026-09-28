@@ -589,6 +589,14 @@ TEXT_STATS_SCHEDULE_WAKE = (
 )
 TEXT_STATS_SCHEDULE_NO_WAKE = "Напоминания выключены — будильники не нужны."
 
+# Строчка в /stats про тех, кто заблокировал бота. {count} — сколько их,
+# {mark} — как они помечены в файле.
+TEXT_STATS_BLOCKED = (
+    "Заблокировали бота: {count} чел. Рассылки им не уходят, но из списка "
+    "они не пропадают — в registry.xlsx у них в столбце «статус» стоит "
+    "«{mark}»."
+)
+
 # Строчка в /stats: работает ли на самом деле проверка «перед началом».
 # {minutes} — как часто она идёт, {at} — во сколько следующая, {tz} — пояс.
 TEXT_STATS_SOON_JOB_ON = (
@@ -639,7 +647,11 @@ TEXT_REGISTRY_IN_FILE = (
 
 # Заголовки столбцов в registry.xlsx — по строке на каждую запись на вебинар.
 # Названия можно менять, порядок — нет: бот читает столбцы по порядку.
-TEXT_FILE_HEADER = ("id", "вебинар", "имя", "username", "записан(а), МСК")
+TEXT_FILE_HEADER = ("id", "вебинар", "имя", "username", "записан(а), МСК",
+                    "статус")
+# Что стоит в столбце «статус» у тех, кто заблокировал бота. Их НЕ удаляют:
+# они остаются в списке, просто рассылки им больше не уходят.
+TEXT_FILE_BLOCKED = "заблокировал(а) бота"
 # Два листа в файле. Записи на прошедшие вебинары бот сам переносит на лист
 # «Архив» — оттуда ничего не пропадает, это база всех, кто когда-либо
 # записывался. Бот читает оба листа одинаково.
@@ -877,6 +889,10 @@ people = {}
 # Когда человек записался на вебинар: (ключ вебинара, id) -> '2026-09-25 17:24'
 # по Москве. У записавшихся до 25.09 этого нет — тогда время не хранилось.
 signed_at = {}
+# Кто заблокировал бота: писать им бесполезно, Телеграм откажет. Из списка
+# их НЕ убираем — человек остаётся в файле с пометкой и в «Всего», просто
+# рассылки его пропускают. Разблокирует и запишется снова — пометка снимется.
+blocked = set()
 # Сообщение с файлом текущего списка и предыдущего: (message_id, file_id).
 file_pointer = None
 prev_pointer = None
@@ -999,6 +1015,22 @@ def all_subscribers() -> set:
     return everyone
 
 
+def reachable(ids) -> set:
+    """Кому из них вообще можно написать: без тех, кто заблокировал бота.
+
+    Считаем это до предпросмотра, чтобы «получателей: N» было честным.
+    """
+    return set(ids) - blocked
+
+
+def seen_alive(user_id: int) -> None:
+    """Человек написал боту или нажал кнопку — значит, он его не блокирует.
+
+    Снимаем пометку: в файл она уйдёт при ближайшем сохранении.
+    """
+    blocked.discard(user_id)
+
+
 def plural_ru(number: int, one: str, few: str, many: str) -> str:
     """Русские числительные: 1 регистрацию, 2 регистрации, 5 регистраций."""
     if number % 100 in (11, 12, 13, 14):
@@ -1080,9 +1112,12 @@ def fill_sheet(ws, keys, snap) -> None:
                 cell = ws.cell(row=row, column=5, value=datetime.datetime.strptime(
                     when, "%Y-%m-%d %H:%M"))
                 cell.number_format = "yyyy-mm-dd hh:mm"
+            if uid in blocked:
+                cell = ws.cell(row=row, column=6, value=TEXT_FILE_BLOCKED)
+                cell.data_type = "s"
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:E{row}"
-    for letter, width in zip("ABCDE", (13, 17, 32, 20, 18)):
+    ws.auto_filter.ref = f"A1:F{row}"
+    for letter, width in zip("ABCDEF", (13, 17, 32, 20, 18, 22)):
         ws.column_dimensions[letter].width = width
 
 
@@ -1110,12 +1145,12 @@ def registry_xlsx(snap, today: datetime.date = None) -> bytes:
 
 
 def parse_registry_xlsx(data: bytes):
-    """Разбирает registry.xlsx. Возвращает (записи, люди, время записи).
+    """Разбирает registry.xlsx: (записи, люди, время записи, заблокировавшие).
 
     Непонятная строка — ошибка, а не пропуск: это наш собственный файл, и
     испорченный файл нельзя принять за прочитанный.
     """
-    regs, ppl, times = {}, {}, {}
+    regs, ppl, times, blk = {}, {}, {}, set()
     wb = load_workbook(io.BytesIO(data), read_only=True)
     try:
         # Читаем ВСЕ листы: и «Записи», и «Архив» — для бота это один список.
@@ -1143,9 +1178,12 @@ def parse_registry_xlsx(data: bytes):
                 times[(key, uid)] = when.strftime("%Y-%m-%d %H:%M")
             elif when:
                 times[(key, uid)] = str(when).strip()
+            # Любая пометка в «статусе» значит одно: человек заблокировал бота
+            if len(row) > 5 and str(row[5] or "").strip():
+                blk.add(uid)
     finally:
         wb.close()
-    return regs, ppl, times
+    return regs, ppl, times, blk
 
 
 def prune_past_sent(today: datetime.date = None) -> int:
@@ -1217,13 +1255,13 @@ def load_registry(bot) -> bool:
                      "в нём нет — НИЧЕГО не пишу", total)
         return False
 
-    regs, ppl, times = {}, {}, {}
+    regs, ppl, times, blk = {}, {}, {}, set()
     if "FILE" in pointers:
         try:
             data = download_registry(bot, pointers["FILE"][1])
             if data[:2] != b"PK":            # xlsx — это zip-архив
                 raise ValueError("файл списка не в формате xlsx")
-            regs, ppl, times = parse_registry_xlsx(data)
+            regs, ppl, times, blk = parse_registry_xlsx(data)
             count = len(set().union(*regs.values())) if regs else 0
             # «Всего» записано в сообщение тем же сохранением, что и файл.
             # Файл, оборвавшийся на границе строки, разбирается без ошибок,
@@ -1254,6 +1292,7 @@ def load_registry(bot) -> bool:
             people.setdefault(uid, info)
         for pair, when in times.items():
             signed_at.setdefault(pair, when)
+        blocked.update(blk)
     reminded_keys.update(sent)
     _read_failures = 0
 
@@ -1521,7 +1560,7 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
     sent, failed, gone = 0, 0, []
     parse_mode, markup_error = 'HTML', None
     caption = caption_for(media, text)
-    for user_id in sorted(recipients):
+    for user_id in sorted(reachable(recipients)):
         try:
             media_ok = False
             if media:
@@ -1563,8 +1602,7 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
         except TelegramError as e:
             failed += 1
             if is_permanent_failure(e):
-                logger.info("Убираю %s из списка — адресат недоступен: %s",
-                            user_id, e)
+                logger.info("Помечаю %s — адресат недоступен: %s", user_id, e)
                 gone.append(user_id)
             else:
                 logger.warning("Не доставлено %s (временная ошибка, оставляю "
@@ -1574,9 +1612,9 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
         time.sleep(0.1 if media else 0.05)
 
     if gone:
-        for ids in registrations.values():
-            for user_id in gone:
-                ids.discard(user_id)
+        # Не удаляем: человек остаётся в списке и в файле, но с пометкой —
+        # рассылки его теперь пропускают, а «Всего» не уменьшается.
+        blocked.update(gone)
         save_registry(bot)
     return sent, failed, markup_error
 
@@ -1706,7 +1744,7 @@ def _send_reminders(bot, today: datetime.date = None) -> int:
                         key, days_left)
             continue
 
-        recipients = registrations.get(key, set())
+        recipients = reachable(registrations.get(key, set()))
         if not recipients:
             # Намеренно НЕ помечаем как отправленное: иначе /stats покажет
             # "напоминание уже отправлено" там, где не ушло ничего, а тот, кто
@@ -1784,7 +1822,7 @@ def _send_start_reminders(bot, now: datetime.datetime = None) -> int:
         if sent_tag(key, "soon") in reminded_keys:
             continue
 
-        recipients = registrations.get(key, set())
+        recipients = reachable(registrations.get(key, set()))
         if not recipients:
             logger.info("На вебинар %s никто не записался — напоминать некому",
                         key)
@@ -1901,6 +1939,7 @@ def register_callback(update: Update, context: CallbackContext) -> None:
 
     key = query.data.partition(":")[2]
     user = query.from_user
+    seen_alive(user.id)
     w = find_webinar(key)
     webinar_date = key_date(key) if w else None
 
@@ -1963,6 +2002,7 @@ def handle_message(update: Update, context: CallbackContext) -> None:
 
     state = context.user_data.get('state')
     user = update.effective_user
+    seen_alive(user.id)
 
     if state == 'QUESTIONS':
         update.message.reply_text(TEXT_QUESTIONS_DONE, parse_mode='HTML')
@@ -2035,6 +2075,10 @@ def stats_command(update: Update, context: CallbackContext) -> None:
                 at=jobs[0].next_t.astimezone(TIMEZONE).strftime("%H:%M"))
         else:
             text += "\n\n" + TEXT_STATS_SOON_JOB_OFF
+
+    if blocked:
+        text += "\n\n" + TEXT_STATS_BLOCKED.format(count=len(blocked),
+                                                   mark=TEXT_FILE_BLOCKED)
 
     text += "\n\n" + TEXT_STATS_FILE
 
@@ -2404,6 +2448,7 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
         recipients = set()
         for key in keys:
             recipients |= registrations.get(key, set())
+        recipients = reachable(recipients)
         if not recipients:
             update.message.reply_text(
                 TEXT_BROADCAST_EMPTY_ONE.format(date=date_str))
@@ -2416,7 +2461,7 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
             label = date_str
     else:
         keys = None                               # всем записавшимся
-        recipients = all_subscribers()
+        recipients = reachable(all_subscribers())
         if not recipients:
             update.message.reply_text(TEXT_BROADCAST_EMPTY_ALL)
             return
@@ -2497,11 +2542,12 @@ def broadcast_callback(update: Update, context: CallbackContext) -> None:
         return
     # Кому — считаем заново: пока думали, кто-то мог записаться
     if job["keys"] is None:
-        recipients = all_subscribers()
+        recipients = reachable(all_subscribers())
     else:
         recipients = set()
         for key in job["keys"]:
             recipients |= registrations.get(key, set())
+        recipients = reachable(recipients)
     _edit_question(query, TEXT_BROADCAST_SENDING.format(
         label=job["label"], count=len(recipients)))
     sent, failed, _ = broadcast(context.bot, job["text"], recipients,
