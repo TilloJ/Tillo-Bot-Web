@@ -717,11 +717,11 @@ def courses_text() -> str:
     Прошедшие вебинары показываем отдельным разделом: иначе /courses предлагал
     бы то, на что /register уже не даёт записаться.
     """
-    today = today_local()
+    moment = as_moment()
     upcoming, past = [], []
     for w in WEBINARS:
         d = parse_date(w["date"])
-        if d and d < today:
+        if d and not webinar_is_ahead(w, moment):
             past.append((d, w))
         else:
             upcoming.append((d or datetime.date.max, w))
@@ -766,18 +766,44 @@ def parse_date(value: str):
         return None
 
 
+def now_local() -> datetime.datetime:
+    """Текущий момент в поясе бота. Один источник времени на весь файл."""
+    return datetime.datetime.now(TIMEZONE)
+
+
 def today_local() -> datetime.date:
-    return datetime.datetime.now(TIMEZONE).date()
+    return now_local().date()
 
 
-def upcoming_webinars(today: datetime.date = None):
-    """Вебинары, которые ещё не прошли, по возрастанию даты."""
-    if today is None:
-        today = today_local()
+def as_moment(when=None) -> datetime.datetime:
+    """На какой момент смотрим: сейчас, указанный момент или начало дня."""
+    if when is None:
+        return now_local()
+    if isinstance(when, datetime.datetime):
+        return when
+    return TIMEZONE.localize(datetime.datetime.combine(when, datetime.time.min))
+
+
+def webinar_is_ahead(w, moment: datetime.datetime) -> bool:
+    """Вебинар ещё впереди на этот момент? Начался — значит, уже нет.
+
+    Считаем по времени начала, а не по дате: вечером 30.09 записываться на
+    утренний сеанс того же дня уже поздно, и показывать его не надо.
+    """
+    start = webinar_start(w)
+    if start is not None:
+        return start > moment
+    d = parse_date(w["date"])      # время не разобрали — сравним хотя бы даты
+    return d is not None and d >= moment.date()
+
+
+def upcoming_webinars(when=None):
+    """Вебинары, которые ещё не начались, по возрастанию даты."""
+    moment = as_moment(when)
     found = []
     for w in WEBINARS:
         d = parse_date(w["date"])
-        if d and d >= today:
+        if d and webinar_is_ahead(w, moment):
             found.append((d, w))
     found.sort(key=lambda pair: pair[0])
     return [w for _, w in found]
@@ -1941,10 +1967,9 @@ def register_callback(update: Update, context: CallbackContext) -> None:
     user = query.from_user
     seen_alive(user.id)
     w = find_webinar(key)
-    webinar_date = key_date(key) if w else None
 
-    # Кнопку могли нажать на старом сообщении — вебинара может уже не быть
-    if w is None or webinar_date is None or webinar_date < today_local():
+    # Кнопку могли нажать на старом сообщении — вебинар мог уже начаться
+    if w is None or not webinar_is_ahead(w, as_moment()):
         query.edit_message_text(TEXT_REGISTER_GONE, parse_mode='HTML')
         return
 
@@ -2035,7 +2060,7 @@ def stats_command(update: Update, context: CallbackContext) -> None:
 
     today = today_local()
     lines = []
-    for w in upcoming_webinars(today):
+    for w in upcoming_webinars():
         d = parse_date(w["date"])
         days = (d - today).days
         key = webinar_key(w)
