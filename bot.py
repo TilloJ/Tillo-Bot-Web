@@ -337,10 +337,11 @@ TEXT_BROADCAST_USAGE = (
     "<b>/broadcast 30.09.2026</b> Привет!\n"
     "— всем в этот день; если вебинаров в нём несколько, бот попросит "
     "уточнить время.\n\n"
-    "<b>Кружок</b>: выложите кружок сюда в группу и ответьте на него (reply) "
-    "той же командой, например <b>/broadcast 30.09.2026 11:00</b> Идите все! "
-    "Текст после даты можно не писать. Бот сначала покажет, что уйдёт, и "
-    "спросит — без кнопки «Отправить» никому ничего не уйдёт."
+    "<b>Картинка, кружок, голосовое, гифка или видео</b>: выложите их сюда в "
+    "группу и ответьте на это сообщение (reply) той же командой, например "
+    "<b>/broadcast 30.09.2026 11:00</b> Идите все! Текст можно не писать.\n\n"
+    "Бот всегда сначала показывает, что уйдёт, и спрашивает — без кнопки "
+    "«✅ Отправить» никому ничего не уйдёт."
 )
 
 TEXT_BROADCAST_PICK_TIME = (
@@ -359,42 +360,43 @@ TEXT_BROADCAST_EMPTY_ONE = "На {date} пока никто не записан 
 
 TEXT_BROADCAST_EMPTY_ALL = "Пока никто не зарегистрирован — рассылать некому."
 
-TEXT_BROADCAST_START_ALL = "Начинаю рассылку всем записанным — получателей: {count}"
-
-TEXT_BROADCAST_START_ONE = (
-    "Начинаю рассылку тем, кто записан на {date} — получателей: {count}"
-)
-
 TEXT_BROADCAST_DONE = "Готово. Доставлено: {sent}. Не доставлено: {failed}."
 
-# --- Рассылка кружка: /broadcast в ответ на кружок --------------------------
-# У кружка не бывает подписи, поэтому человек получает два сообщения:
-# сначала кружок, потом текст. Перед рассылкой бот показывает, что уйдёт.
+# --- Предпросмотр: любая рассылка сначала показывается здесь, в группе -----
+# Бот ничего не рассылает сразу. Сначала он выкладывает сюда ровно то, что
+# получат люди, и спрашивает кнопкой. {label} — кому, {count} — сколько человек.
+# Картинка, гифка, видео и голосовое уходят с текстом одним сообщением (текст
+# — подписью). У кружка подписи не бывает: сначала кружок, потом текст.
 TEXT_BROADCAST_EVERYONE = "всем записавшимся"
-TEXT_BROADCAST_VIDEO_CONFIRM = (
+TEXT_BROADCAST_CONFIRM = (
     "👆 Так это увидят люди — всё, что выше.\n"
     "Кому: {label} — получателей: {count}.\n"
     "Отправить?"
 )
-TEXT_BROADCAST_VIDEO_BTN_YES = "✅ Отправить"
-TEXT_BROADCAST_VIDEO_BTN_NO = "Отмена"
-TEXT_BROADCAST_VIDEO_START = "Отправляю кружок: {label} — получателей: {count}"
-TEXT_BROADCAST_VIDEO_CANCELLED = "Отменено — никому ничего не ушло."
-TEXT_BROADCAST_VIDEO_EXPIRED = (
+TEXT_BROADCAST_BTN_YES = "✅ Отправить"
+TEXT_BROADCAST_BTN_NO = "Отмена"
+TEXT_BROADCAST_SENDING = "Отправляю: {label} — получателей: {count}"
+TEXT_BROADCAST_CANCELLED = "Отменено — никому ничего не ушло."
+TEXT_BROADCAST_EXPIRED = (
     "Этот предпросмотр больше не действует — его уже отправили или бот успел "
-    "перезапуститься. Ответьте на кружок командой ещё раз."
+    "перезапуститься. Напишите команду ещё раз."
 )
 # {error} — что именно не так
-TEXT_BROADCAST_VIDEO_FAILED = (
-    "Не получилось переслать этот кружок ({error}). Ничего не отправлено."
+TEXT_BROADCAST_PREVIEW_FAILED = (
+    "Не получилось показать, что уйдёт ({error}). Ничего не отправлено."
 )
-TEXT_BROADCAST_VIDEO_BAD_MARKUP = (
+TEXT_BROADCAST_BAD_MARKUP = (
     "В тексте ошибка в разметке ({error}) — ничего не отправлено. "
     "Проверьте, что каждый &lt;b&gt; закрыт &lt;/b&gt;."
 )
-TEXT_BROADCAST_NOT_VIDEO_NOTE = (
-    "Это обычное видео, а не кружок. Так можно разослать только кружок — "
-    "ничего не отправлено."
+# Ответ командой на файл, стикер, опрос и т.п. Файлы бот не рассылает нарочно:
+# в этой же группе лежит список записавшихся, и разослать его всем — беда.
+TEXT_BROADCAST_UNSUPPORTED = (
+    "Так можно разослать только текст, картинку, кружок, голосовое, гифку или "
+    "видео. Файлы, стикеры и остальное — нельзя. Ничего не отправлено.\n\n"
+    "Картинку или видео, отправленные «файлом», бот видит как файл — "
+    "выложите их заново как фото или видео.\n"
+    "Нужен только текст — напишите команду отдельным сообщением, не ответом."
 )
 
 # Первое слово после /broadcast похоже на дату, но бот его не понял.
@@ -490,6 +492,15 @@ TEXT_ADMIN_HELP = (
     "<i>Пример:</i> /broadcast 30.09.2026 19:00 Ссылка на зум: https://...\n"
     "Если в этот день вебинаров несколько, а время вы не указали, бот "
     "переспросит и ничего не отправит.\n\n"
+
+    "<b>Картинку, кружок, голосовое, гифку или видео</b> — выложите сюда и "
+    "ответьте на это сообщение (reply) той же командой /broadcast; текст "
+    "можно не писать. Именно ответом — команда в подписи к картинке не "
+    "сработает.\n\n"
+
+    "<b>Любую рассылку бот сначала показывает</b> — ровно так, как её увидят "
+    "люди, — и спрашивает кнопкой. Без «✅ Отправить» никому ничего не уйдёт; "
+    "«Отмена» — чтобы просто посмотреть.\n\n"
 
     "<b>/dm текст</b> — написать лично одному человеку. Сначала ответьте "
     "(reply) на сообщение «✅ Регистрация…» или «❓ Вопрос спикеру…», а потом "
@@ -1529,35 +1540,83 @@ def plain_text(text: str) -> str:
     return html.unescape(_HTML_TAG.sub("", text))
 
 
+# Что можно разослать ответом (reply) на сообщение. Гифка у Телеграма заодно
+# и «файл», поэтому сначала ищем своё и только потом отказываем.
+MEDIA_KINDS = ("video_note", "photo", "voice", "animation", "video")
+CAPTION_LIMIT = 1024       # столько знаков Телеграм разрешает в подписи
+
+
+def replied_media(message):
+    """(вид, file_id) картинки, кружка и т.п. из сообщения — или None."""
+    if message is None:
+        return None
+    for kind in MEDIA_KINDS:
+        item = getattr(message, kind, None)
+        if item:
+            if kind == "photo":
+                item = item[-1]    # фото приходит в нескольких размерах, последний — самый крупный
+            return kind, item.file_id
+    return None
+
+
+def caption_for(media, text):
+    """Текст, если он уйдёт подписью к медиа (одним сообщением), иначе None.
+
+    У кружка подписи не бывает. Длину считаем с запасом — вместе с тегами и
+    в единицах UTF-16, где эмодзи идёт за два: Телеграм насчитает не больше.
+    """
+    if not (media and text) or media[0] == "video_note":
+        return None
+    return text if len(text.encode("utf-16-le")) // 2 <= CAPTION_LIMIT else None
+
+
+def send_media(bot, chat_id, media, caption=None):
+    """Одно медиа по file_id: send_photo(photo=…), send_voice(voice=…) и т.д."""
+    kind, file_id = media
+    send = getattr(bot, f"send_{kind}")
+    if caption:
+        return send(chat_id=chat_id, caption=caption, parse_mode='HTML',
+                    **{kind: file_id})
+    return send(chat_id=chat_id, **{kind: file_id})
+
+
 def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
-              video_note: str = None):
-    """Рассылает текст указанным людям.
+              media=None):
+    """Рассылает текст (и медиа) указанным людям.
 
     Возвращает (доставлено, ошибок, ошибка разметки или None).
     markup_fallback — для напоминаний, которые уходят без человека рядом: если
     Телеграм не понял HTML-разметку, тот же текст уходит всем без неё. В
-    /broadcast этого нет: там ошибку сразу видит тот, кто отправлял.
-    video_note — file_id кружка: он уходит каждому первым, текст (если есть)
-    следом. У кружка не бывает подписи, поэтому это два сообщения.
+    /broadcast этого нет: там ошибку ещё в предпросмотре видит тот, кто отправлял.
+    media — (вид, file_id) из replied_media(): уходит каждому первым. Текст
+    идёт к нему подписью, если влезает (caption_for), иначе следом отдельно.
     """
     sent, failed, gone = 0, 0, []
     parse_mode, markup_error = 'HTML', None
+    caption = caption_for(media, text)
     for user_id in sorted(recipients):
         try:
-            delivered = False
-            if video_note:
+            media_ok = False
+            if media:
                 try:
-                    bot.send_video_note(chat_id=user_id, video_note=video_note)
-                    delivered = True
+                    send_media(bot, user_id, media, caption)
+                    media_ok = True
                 except TelegramError as e:
                     if is_permanent_failure(e):
                         raise              # человек ушёл насовсем — ниже уберём
-                    # Кружок не дошёл, но текст человеку всё равно нужен
-                    logger.warning("Кружок не дошёл до %s (%s) — шлю текст",
-                                   user_id, e)
-            if text:
+                    if caption and not isinstance(e, BadRequest):
+                        # Таймаут: сообщение с подписью могло и дойти —
+                        # второй копии текста не шлём
+                        raise
+                    # Телеграм отказал именно в медиа (например, человек
+                    # запретил голосовые и кружки) — текст со ссылкой ему
+                    # всё равно нужен
+                    logger.warning("%s не дошло до %s (%s) — шлю текст",
+                                   media[0], user_id, e)
+            body = "" if (media_ok and caption) else text
+            if body:
                 try:
-                    bot.send_message(chat_id=user_id, text=text,
+                    bot.send_message(chat_id=user_id, text=body,
                                      parse_mode=parse_mode)
                 except BadRequest as e:
                     if not (markup_fallback and parse_mode
@@ -1570,11 +1629,10 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
                     markup_error, text, parse_mode = e, plain_text(text), None
                     bot.send_message(chat_id=user_id, text=text,
                                      parse_mode=None)
-                delivered = True
-            if delivered:
+            if media_ok or body:
                 sent += 1
             else:
-                failed += 1                # только кружок, и он не дошёл
+                failed += 1                # только медиа, и оно не дошло
         except TelegramError as e:
             failed += 1
             if is_permanent_failure(e):
@@ -1584,9 +1642,9 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
             else:
                 logger.warning("Не доставлено %s (временная ошибка, оставляю "
                                "в списке): %s", user_id, e)
-        # чтобы не упереться в лимиты Телеграма; кружок — второе сообщение
-        # тому же человеку, поэтому помедленнее
-        time.sleep(0.1 if video_note else 0.05)
+        # чтобы не упереться в лимиты Телеграма; с медиа бывает и второе
+        # сообщение тому же человеку, поэтому помедленнее
+        time.sleep(0.1 if media else 0.05)
 
     if gone:
         for ids in registrations.values():
@@ -2247,7 +2305,11 @@ def dm_command(update: Update, context: CallbackContext) -> None:
 
 
 def broadcast_command(update: Update, context: CallbackContext) -> None:
-    """/broadcast текст — разослать сообщение всем вручную."""
+    """/broadcast [дата [время]] текст — показать, что уйдёт, и разослать по кнопке.
+
+    Ответом (reply) на картинку, кружок, голосовое, гифку или видео — разослать
+    и их. Сразу не уходит ничего: сначала предпросмотр и вопрос.
+    """
     if not is_admin_chat(update):
         return
 
@@ -2256,14 +2318,17 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
     date_str, time_str, rest = split_target(
         update.message.text.partition(' ')[2].strip())
 
-    # Ответ на кружок — значит, разослать кружок (текст к нему не обязателен)
+    # Ответ на картинку, кружок и т.п. — разослать и её (текст не обязателен).
+    # Ответ на файл, стикер или опрос — отказ: иначе ушёл бы один текст, без
+    # того, на что ответили.
     replied = update.message.reply_to_message
-    video = replied.video_note if replied else None
-    if replied and replied.video and not video:
-        update.message.reply_text(TEXT_BROADCAST_NOT_VIDEO_NOTE)
+    media = replied_media(replied)
+    if replied and not media and (replied.effective_attachment
+                                  or replied.poll or replied.dice):
+        update.message.reply_text(TEXT_BROADCAST_UNSUPPORTED)
         return
 
-    if not rest and not video:
+    if not rest and not media:
         update.message.reply_text(TEXT_BROADCAST_USAGE, parse_mode='HTML')
         return
 
@@ -2313,8 +2378,6 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
                 TEXT_BROADCAST_EMPTY_ONE.format(date=date_str))
             return
         label = f"{date_str} в {time_str}" if time_str else date_str
-        start = TEXT_BROADCAST_START_ONE.format(date=label,
-                                                count=len(recipients))
     else:
         keys = None                               # всем записавшимся
         recipients = all_subscribers()
@@ -2322,79 +2385,79 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
             update.message.reply_text(TEXT_BROADCAST_EMPTY_ALL)
             return
         label = TEXT_BROADCAST_EVERYONE
-        start = TEXT_BROADCAST_START_ALL.format(count=len(recipients))
 
-    if video:
-        # Кружок не шлём сразу: сначала показываем, что уйдёт, и спрашиваем
-        preview_video_broadcast(update, context, video.file_id, rest, keys,
-                                label, len(recipients))
-        return
-
-    update.message.reply_text(start)
-    sent, failed, _ = broadcast(context.bot, rest, recipients)
-    update.message.reply_text(TEXT_BROADCAST_DONE.format(sent=sent, failed=failed))
+    # Ничего не шлём сразу: сначала показываем, что уйдёт, и спрашиваем
+    preview_broadcast(update, context, rest, media, keys, label,
+                      len(recipients))
 
 
-# Кружки, которые показали, но ещё не отправили: id -> что и кому.
+# Рассылки, которые показали, но ещё не отправили: id -> что и кому.
 # Держим в памяти: если бот уснёт и проснётся, кнопка честно скажет, что
 # предпросмотр устарел, — и ничего не уйдёт наугад.
-_pending_video = {}
+_pending_broadcast = {}
 
 
-def preview_video_broadcast(update, context, file_id, text, keys, label,
-                            count) -> None:
-    """Показывает в группе ровно то, что уйдёт, и кнопки «Отправить/Отмена»."""
+def preview_broadcast(update, context, text, media, keys, label,
+                      count) -> None:
+    """Выкладывает в группу ровно то, что уйдёт людям, и кнопки «Отправить/Отмена».
+
+    Шлёт так же, как broadcast() — те же send_media() и caption_for(). Это и
+    проверка: если здесь не вышло, людям тоже не выйдет, и спрашивать не о чем.
+    """
     bot = context.bot
-    # 1. Сам кружок — пересланный по file_id. Это и проверка, что пересылка
-    #    работает: если здесь не вышло, людям тоже не выйдет.
+    caption = caption_for(media, text)
     try:
-        bot.send_video_note(chat_id=ADMIN_CHAT_ID, video_note=file_id)
-    except TelegramError as e:
-        update.message.reply_text(
-            TEXT_BROADCAST_VIDEO_FAILED.format(error=html.escape(str(e))))
-        return
-    # 2. Текст — так, как его увидят люди
-    if text:
-        try:
+        if media:
+            send_media(bot, ADMIN_CHAT_ID, media, caption)
+        if text and not caption:
             bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode='HTML')
-        except BadRequest as e:
-            if not is_markup_error(e):
-                raise
-            update.message.reply_text(
-                TEXT_BROADCAST_VIDEO_BAD_MARKUP.format(error=html.escape(str(e))),
-                parse_mode='HTML')
-            return
-    # 3. Вопрос с кнопками
+    except TelegramError as e:
+        reply = (TEXT_BROADCAST_BAD_MARKUP if is_markup_error(e)
+                 else TEXT_BROADCAST_PREVIEW_FAILED)
+        update.message.reply_text(reply.format(error=html.escape(str(e))),
+                                  parse_mode='HTML')
+        return
     pid = secrets.token_hex(4)
-    _pending_video[pid] = {"file_id": file_id, "text": text, "keys": keys,
-                           "label": label}
+    _pending_broadcast[pid] = {"text": text, "media": media, "keys": keys,
+                               "label": label}
     keyboard = [[
-        InlineKeyboardButton(TEXT_BROADCAST_VIDEO_BTN_YES,
-                             callback_data=f"vn:y:{pid}"),
-        InlineKeyboardButton(TEXT_BROADCAST_VIDEO_BTN_NO,
-                             callback_data=f"vn:n:{pid}"),
+        InlineKeyboardButton(TEXT_BROADCAST_BTN_YES, callback_data=f"bc:y:{pid}"),
+        InlineKeyboardButton(TEXT_BROADCAST_BTN_NO, callback_data=f"bc:n:{pid}"),
     ]]
     update.message.reply_text(
-        TEXT_BROADCAST_VIDEO_CONFIRM.format(label=label, count=count),
+        TEXT_BROADCAST_CONFIRM.format(label=label, count=count),
         reply_markup=InlineKeyboardMarkup(keyboard))
 
 
-def video_broadcast_callback(update: Update, context: CallbackContext) -> None:
-    """Кнопки под предпросмотром кружка. Работают только в рабочей группе."""
+def _edit_question(query, text: str) -> None:
+    """Меняет вопрос с кнопками на итог. Не вышло — не беда, главное сделано."""
+    try:
+        query.edit_message_text(text)
+    except TelegramError as e:
+        logger.warning("Не удалось обновить вопрос о рассылке: %s", e)
+
+
+def broadcast_callback(update: Update, context: CallbackContext) -> None:
+    """Кнопки под предпросмотром рассылки. Работают только в рабочей группе."""
     query = update.callback_query
-    query.answer()
+    try:
+        query.answer()
+    except TelegramError as e:
+        # Бот мог быть занят другой рассылкой, и Телеграм счёл нажатие
+        # устаревшим. Но нажатие настоящее — выполняем его.
+        logger.warning("Не удалось ответить на нажатие кнопки: %s", e)
     # CallbackQueryHandler не проходит через is_admin_chat — проверяем сами
     if not (ADMIN_CHAT_ID and query.message
             and query.message.chat.id == ADMIN_CHAT_ID):
         return
     _, action, pid = query.data.split(":", 2)
     # pop, а не get: второе нажатие той же кнопки уже ничего не найдёт
-    job = _pending_video.pop(pid, None)
+    job = _pending_broadcast.pop(pid, None)
     if job is None:
-        query.edit_message_text(TEXT_BROADCAST_VIDEO_EXPIRED)
+        _edit_question(query, TEXT_BROADCAST_EXPIRED)
         return
     if action != "y":
-        query.edit_message_text(TEXT_BROADCAST_VIDEO_CANCELLED)
+        _edit_question(query, TEXT_BROADCAST_CANCELLED)
         return
     # Кому — считаем заново: пока думали, кто-то мог записаться
     if job["keys"] is None:
@@ -2403,10 +2466,10 @@ def video_broadcast_callback(update: Update, context: CallbackContext) -> None:
         recipients = set()
         for key in job["keys"]:
             recipients |= registrations.get(key, set())
-    query.edit_message_text(TEXT_BROADCAST_VIDEO_START.format(
+    _edit_question(query, TEXT_BROADCAST_SENDING.format(
         label=job["label"], count=len(recipients)))
     sent, failed, _ = broadcast(context.bot, job["text"], recipients,
-                                video_note=job["file_id"])
+                                media=job["media"])
     notify_group(context.bot, TEXT_BROADCAST_DONE.format(sent=sent,
                                                          failed=failed))
 
@@ -2495,8 +2558,10 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler('dm', dm_command))
     dispatcher.add_handler(CommandHandler('who', who_command))
     dispatcher.add_handler(CallbackQueryHandler(register_callback, pattern=r'^reg:'))
+    # «vn:» — так назывались кнопки, когда рассылать можно было только кружок.
+    # Старые кнопки остались в группе и должны честно сказать «не действует».
     dispatcher.add_handler(
-        CallbackQueryHandler(video_broadcast_callback, pattern=r'^vn:'))
+        CallbackQueryHandler(broadcast_callback, pattern=r'^(bc|vn):'))
     dispatcher.add_handler(
         MessageHandler(Filters.text & ~Filters.command, handle_message)
     )
