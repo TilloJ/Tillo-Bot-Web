@@ -58,14 +58,14 @@ WEBINARS = [
     {
         "date": "30.09.2026",
         "time": "11:00",
-        "zoom": "https://us06web.zoom.us/j/81486969386",
+        "zoom": "https://us06web.zoom.us/j/81486969386?pwd=igtP2cbp8VhdlVhTQIqIPVqM9SDtlP.1",
         "title": "Черепанова Екатерина: 5 ошибок, из-за которых здоровое "
                  "питание не становится образом жизни",
     },
     {
         "date": "30.09.2026",
         "time": "19:00",
-        "zoom": "",
+        "zoom": "https://us06web.zoom.us/j/85930513192?pwd=8lPNVRjhsKVL0KpRty1Y1rTI53zaDl.1",
         "title": "Черепанова Екатерина: 5 ошибок, из-за которых здоровое "
                  "питание не становится образом жизни",
     },
