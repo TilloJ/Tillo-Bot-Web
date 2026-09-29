@@ -1050,17 +1050,25 @@ def prune_resolved() -> int:
     return removed
 
 
-def unassigned_keys():
+def unassigned_keys(today: datetime.date = None):
     """Кто из старых записей по одной дате остался без вебинара.
 
     Возвращает {дата: множество id}. Тех, кто уже записался на конкретный
     вебинар в этот же день, НЕ считаем: напоминание они получат, и жаловаться
     на них незачем — иначе предупреждение остаётся висеть после того, как люди
     перезаписались.
+
+    Про прошедшие даты тоже не сообщаем: напоминание о вебинаре, который уже
+    был, всё равно не уйдёт, и просить этих людей перезаписаться больше не на
+    что. В списке они остаются, рассылки до них доходят.
     """
+    if today is None:
+        today = today_local()
     stranded = {}
     for key, ids in registrations.items():
         if not ids or not _DATE_ONLY.match(key):
+            continue
+        if (key_date(key) or today) < today:
             continue
         same_day = webinars_on(key)
         if len(same_day) <= 1:
