@@ -1000,8 +1000,8 @@ def migrate_key(key: str) -> str:
     день вебинар по-прежнему один — переносим запись на него. Если их стало
     несколько, угадывать НЕЛЬЗЯ: человек записывался тогда, когда второго
     ещё не было, и определить какой именно он выбрал неоткуда. Такие записи
-    остаются как есть, а /stats показывает их отдельно, чтобы они не пропали
-    из виду.
+    здесь остаются как есть — на все сеансы дня их при запуске записывает
+    adopt_unassigned().
     """
     if not _DATE_ONLY.match(key):
         return key
@@ -1016,6 +1016,34 @@ def migrate_key(key: str) -> str:
             key, len(same_day),
         )
     return key
+
+
+def adopt_unassigned(today: datetime.date = None) -> int:
+    """Старые записи «по дате» — на ВСЕ сеансы того дня, пока он впереди.
+
+    Такой человек записывался, когда сеанс в этот день был один, а старый
+    формат не сохранил, на какой именно. Выбирать за него нельзя, но и
+    оставлять без напоминаний незачем: записываем на все сеансы дня, и
+    напоминание каждого из них до него дойдёт. Саму строку «по дате» потом
+    убирает prune_resolved(). Возвращает, скольких людей перенесли.
+    """
+    if today is None:
+        today = today_local()
+    adopted = 0
+    for key in list(registrations):
+        if not _DATE_ONLY.match(key) or (key_date(key) or today) < today:
+            continue
+        sessions = [webinar_key(w) for w in webinars_on(key)]
+        if len(sessions) <= 1:
+            continue
+        for uid in set(registrations[key]):
+            missing = [s for s in sessions if uid not in registrations.get(s, set())]
+            for s in missing:
+                registrations.setdefault(s, set()).add(uid)
+            adopted += bool(missing)
+        logger.info("Записи по дате %s перенесены на все сеансы дня: %s",
+                    key, ", ".join(sessions))
+    return adopted
 
 
 def prune_resolved() -> int:
@@ -2766,10 +2794,12 @@ def main() -> None:
         logger.error("Вебинары с одинаковой датой и временем: %s — их нельзя "
                      "различить, поменяйте время у одного из них", dupes)
 
-    if load_registry(updater.bot) and prune_resolved():
-        # На холодном старте подчищаем старые записи тех, кто уже перезаписался.
-        # Сервис просыпается часто, поэтому список приходит в порядок сам.
-        save_registry(updater.bot)
+    if load_registry(updater.bot):
+        # На холодном старте приводим старые записи «по дате» в порядок:
+        # записываем их на все сеансы того дня и убираем саму строку. Сервис
+        # просыпается часто, поэтому список приходит в порядок сам.
+        if adopt_unassigned() + prune_resolved():
+            save_registry(updater.bot)
 
     # Раз в день: не пора ли напоминание «за N дней»
     updater.job_queue.run_daily(
