@@ -177,6 +177,7 @@ TEXT_START = (
     "Привет! Это бот Tillo Медиа.\n\n"
     "Нажмите кнопку <b>Меню</b> слева от поля ввода — там все действия:\n\n"
     "/register — регистрация на вебинар\n"
+    "/link — ссылка на ваш вебинар\n"
     "/questions — задать вопрос спикеру\n"
     "/courses — все курсы и вебинары\n"
     "/help — помощь"
@@ -190,6 +191,14 @@ TEXT_REGISTER_DONE = (
     "Готово! Записали вас на <b>{date}</b> в {time}\n\n"
     "<b>{title}</b>\n\n"
     "За день до вебинара пришлю напоминание."
+)
+
+# Этим подтверждаем запись, когда все напоминания по вебинару уже разосланы:
+# человеку больше ничего не придёт, и ссылку бот шлёт следующим сообщением.
+TEXT_REGISTER_DONE_SOON = (
+    "Готово! Записали вас на <b>{date}</b> в {time}\n\n"
+    "<b>{title}</b>\n\n"
+    "Вебинар уже совсем скоро — ссылку пришлю следующим сообщением."
 )
 
 TEXT_REGISTER_ALREADY = "Вы уже записаны на этот вебинар 🙂"
@@ -211,6 +220,26 @@ TEXT_NO_WEBINARS = (
 TEXT_COURSES_TITLE = "<b>Курсы и вебинары Tillo</b>"
 TEXT_COURSES_UPCOMING = "<b>Ближайшие</b>"
 TEXT_COURSES_PAST = "<b>Уже прошли</b>"
+
+# --- /link: ссылка на свой вебинар по запросу ------------------------------
+# Ссылку получает только тот, кто записан именно на этот сеанс.
+TEXT_LINK_NONE = (
+    "Вы пока не записаны ни на один вебинар. Нажмите /register — покажу, "
+    "что будет в ближайшее время."
+)
+TEXT_LINK_HEADER = "Ваши вебинары и ссылки на них:"
+# {date}, {time}, {title}, {zoom} подставляются автоматически
+TEXT_LINK_ITEM = (
+    "<b>{date} в {time}</b> (по московскому времени)\n"
+    "{title}\n"
+    "🔗 {zoom}"
+)
+# То же, но ссылка в расписании ещё не заполнена
+TEXT_LINK_ITEM_NO_ZOOM = (
+    "<b>{date} в {time}</b> (по московскому времени)\n"
+    "{title}\n"
+    "Ссылку пришлём ближе к началу."
+)
 
 TEXT_QUESTIONS = "Напишите ваш вопрос — я передам его спикеру."
 
@@ -582,6 +611,11 @@ TEXT_ADMIN_HELP = (
 
     "<b>/id</b> — показать номер этого чата. Нужен только при настройке.\n\n"
 
+    "<b>/health</b> — техническая проверка: будильники, часовые пояса и "
+    "прочая внутренняя кухня бота.\n"
+    "<i>Когда нужно:</i> никогда — это для разработчика. Если бот ведёт себя "
+    "странно, отправьте эту команду и перешлите ему ответ.\n\n"
+
     "———\n\n"
 
     "<b>Как написать человеку лично</b>\n"
@@ -611,23 +645,18 @@ TEXT_STATS_FILE = (
     "ссылки.</i>"
 )
 
+# Когда уходят напоминания — простыми словами. Время в московском поясе:
+# бот считает по Праге, но владельцу удобнее видеть своё.
 TEXT_STATS_SCHEDULE = (
-    "<b>Когда уходят напоминания</b>\n"
-    "{days}{soon}\n"
-    "{wake}"
+    "<b>Напоминания уходят сами</b>\n"
+    "{days}{soon}"
 )
-
-TEXT_STATS_SCHEDULE_DAYS = "{list} — в {at} ({tz})"
+TEXT_STATS_SCHEDULE_DAYS = "за {list} до вебинара — в {at} по московскому времени"
 TEXT_STATS_SCHEDULE_NO_DAYS = "напоминания за несколько дней выключены"
-TEXT_STATS_SCHEDULE_SOON = (
-    "\nи ещё раз примерно за {minutes} минут до начала "
-    "(время вебинаров — {wtz})"
-)
-TEXT_STATS_SCHEDULE_WAKE = (
-    "Чтобы всё это ушло, сервис должен не спать в: {times} ({tz}). "
-    "Это и есть список будильников, которые его будят."
-)
-TEXT_STATS_SCHEDULE_NO_WAKE = "Напоминания выключены — будильники не нужны."
+TEXT_STATS_SCHEDULE_SOON = "\nи ещё раз примерно за {minutes} минут до начала"
+
+# Последняя строчка /stats
+TEXT_STATS_FOOTER = "<i>Техническая проверка: /health</i>"
 
 # Строчка в /stats про тех, кто заблокировал бота. {count} — сколько их,
 # {mark} — как они помечены в файле.
@@ -637,16 +666,40 @@ TEXT_STATS_BLOCKED = (
     "«{mark}»."
 )
 
-# Строчка в /stats: работает ли на самом деле проверка «перед началом».
-# {minutes} — как часто она идёт, {at} — во сколько следующая, {tz} — пояс.
-TEXT_STATS_SOON_JOB_ON = (
+# ---------------------------------------------------------------------------
+# /health — техническая проверка для разработчика. Всё, что владельцу знать
+# незачем: будильники, служебная проверка перед началом, часовые пояса.
+# ---------------------------------------------------------------------------
+TEXT_HEALTH = (
+    "🔧 <b>Техническая проверка</b>\n"
+    "<i>Служебные подробности для разработчика. Для работы с вебинарами "
+    "хватает /stats.</i>\n\n"
+    "Бот запущен: {started}.\n"
+    "Список записавшихся прочитан: {loaded}\n\n"
+    "{soon_job}\n\n"
+    "<b>Будильники</b>\n"
+    "{wake}\n\n"
+    "Пояса: напоминания — {tz}, время вебинаров — {wtz}."
+)
+TEXT_HEALTH_LOADED_YES = "да, {people} чел. / {records}."
+TEXT_HEALTH_LOADED_NO = (
+    "⚠️ НЕТ. Пока это так, регистрации не сохраняются и напоминания не уходят."
+)
+# {minutes} — как часто идёт проверка «перед началом», {at} — когда следующая
+TEXT_HEALTH_SOON_JOB_ON = (
     "Проверка «перед началом» работает: каждые {minutes} мин., пока сервис не "
     "спит, следующая — в {at} ({tz})."
 )
-TEXT_STATS_SOON_JOB_OFF = (
+TEXT_HEALTH_SOON_JOB_OFF = (
     "⚠️ Проверка «перед началом» не запущена — напоминание перед началом НЕ "
-    "уйдёт. Напишите разработчику."
+    "уйдёт."
 )
+TEXT_HEALTH_WAKE = (
+    "Бесплатный сервис засыпает без обращений, а спящий ничего не рассылает. "
+    "Он должен не спать в: {times} ({tz}) — это и есть расписание внешнего "
+    "будильника."
+)
+TEXT_HEALTH_NO_WAKE = "Напоминания выключены — будильники не нужны."
 
 # Записи из старого формата, которые не привязаны к вебинару
 TEXT_STATS_UNASSIGNED = (
@@ -956,6 +1009,9 @@ people = {}
 # Когда человек записался на вебинар: (ключ вебинара, id) -> '2026-09-25 17:24'
 # по Москве. У записавшихся до 25.09 этого нет — тогда время не хранилось.
 signed_at = {}
+# Когда этот процесс запустился — /health показывает это, чтобы было видно,
+# что сервис недавно перезапускался (на бесплатном тарифе это норма).
+STARTED_AT = now_local()
 # Кто заблокировал бота: писать им бесполезно, Телеграм откажет. Из списка
 # их НЕ убираем — человек остаётся в файле с пометкой и в «Всего», просто
 # рассылки его пропускают. Разблокирует и запишется снова — пометка снимется.
@@ -1132,6 +1188,26 @@ def seen_alive(user_id: int) -> None:
     Снимаем пометку: в файл она уйдёт при ближайшем сохранении.
     """
     blocked.discard(user_id)
+
+
+def days_phrase(days: int) -> str:
+    """«сегодня» / «завтра» / «через 5 дней» — как это читается в /stats."""
+    if days <= 0:
+        return "сегодня"
+    if days == 1:
+        return "завтра"
+    return f"через {days} " + plural_ru(days, "день", "дня", "дней")
+
+
+def reminder_time_in(tz) -> str:
+    """Время ежедневных напоминаний в чужом поясе: 12:00 Праги -> 13:00 МСК.
+
+    Считаем через конкретную дату, а не прибавлением часов: разница поясов
+    меняется при переходе на зимнее время.
+    """
+    moment = TIMEZONE.localize(datetime.datetime.combine(
+        today_local(), datetime.time(REMINDER_HOUR, REMINDER_MINUTE)))
+    return moment.astimezone(tz).strftime("%H:%M")
 
 
 def plural_ru(number: int, one: str, few: str, many: str) -> str:
@@ -1555,7 +1631,8 @@ def notify_group(bot, text: str) -> None:
     if not ADMIN_CHAT_ID:
         return
     try:
-        bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode='HTML')
+        bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode='HTML',
+                         disable_web_page_preview=True)
     except TelegramError as e:
         logger.error(
             "Не удалось написать в группу %s: %s. Проверьте ADMIN_CHAT_ID "
@@ -1813,6 +1890,32 @@ def registry_ready(bot) -> bool:
         notify_group(bot, TEXT_GROUP_REMINDERS_BLOCKED.format(
             minutes=SOON_CHECK_MINUTES))
     return ok
+
+
+def link_reminders_done(key: str) -> bool:
+    """Все напоминания со ссылкой по этому вебинару уже ушли?
+
+    Если да, то записавшийся сейчас не получит уже ничего: напоминания
+    рассылаются один раз и повторно не уходят. Значит, ссылку надо дать ему
+    сразу при регистрации.
+    """
+    if REMINDER_BEFORE_START:
+        return sent_tag(key, "soon") in reminded_keys
+    if REMINDER_DAYS:
+        return sent_tag(key, f"d{min(REMINDER_DAYS)}") in reminded_keys
+    return True          # напоминаний нет вовсе — ссылка нужна сразу
+
+
+def send_link_now(bot, w, user_id: int) -> bool:
+    """Шлёт записавшемуся то же напоминание «скоро», что получили остальные."""
+    text, note = reminder_text(w, TEXT_WHEN_SOON, reminder_template(None))
+    if note:
+        notify_group(bot, note)
+    sent, _, markup_error = broadcast(bot, text, {user_id},
+                                      markup_fallback=True)
+    if markup_error:
+        warn_markup(bot, markup_error)
+    return bool(sent)
 
 
 def send_reminders(bot, today: datetime.date = None) -> int:
@@ -2103,8 +2206,50 @@ def register_callback(update: Update, context: CallbackContext) -> None:
         date=f"{w['date']} в {w['time']}",
         user=user_link(user), username=user_handle(user),
     ))
-    tell_tapper(query, TEXT_REGISTER_DONE.format(
+
+    # Записался после того, как все напоминания уже разосланы: ссылку он
+    # иначе не получит вовсе — шлём её прямо сейчас, тем же текстом.
+    late = link_reminders_done(key)
+    template = TEXT_REGISTER_DONE_SOON if late else TEXT_REGISTER_DONE
+    tell_tapper(query, template.format(
         date=w["date"], time=w["time"], title=clean_title(w)))
+    if late:
+        if send_link_now(context.bot, w, user.id):
+            logger.info("Записался поздно — ссылку на %s отправил сразу", key)
+        else:
+            logger.error("Не удалось сразу отправить ссылку на %s кому-то, "
+                         "кто записался после всех напоминаний", key)
+
+
+def link_command(update: Update, context: CallbackContext) -> None:
+    """/link — прислать ссылку на вебинары, на которые человек записан.
+
+    Нужна тем, кто записался после всех напоминаний или потерял сообщение.
+    Чужие ссылки так не узнать: показываем только те сеансы, на которые
+    записан именно этот человек, и только те, что ещё не начались.
+    """
+    if update.effective_chat.type != "private":
+        return
+    context.user_data['state'] = None
+    user_id = update.effective_user.id
+
+    moment = as_moment()
+    mine = [w for w in WEBINARS
+            if user_id in registrations.get(webinar_key(w), set())
+            and webinar_is_ahead(w, moment)]
+    if not mine:
+        update.message.reply_text(TEXT_LINK_NONE, parse_mode='HTML')
+        return
+
+    items = []
+    for w in sorted(mine, key=lambda x: webinar_start(x) or as_moment()):
+        zoom = (w.get("zoom") or "").strip()
+        template = TEXT_LINK_ITEM if zoom else TEXT_LINK_ITEM_NO_ZOOM
+        items.append(template.format(date=w["date"], time=w["time"],
+                                     title=clean_title(w), zoom=zoom))
+    update.message.reply_text(
+        TEXT_LINK_HEADER + "\n\n" + "\n\n".join(items),
+        parse_mode='HTML', disable_web_page_preview=True)
 
 
 def questions(update: Update, context: CallbackContext) -> None:
@@ -2116,7 +2261,8 @@ def help_command(update: Update, context: CallbackContext) -> None:
     # В рабочей группе /help показывает инструкцию по служебным командам,
     # в личке — обычную помощь для участников вебинаров.
     if is_admin_chat(update):
-        update.message.reply_text(TEXT_ADMIN_HELP, parse_mode='HTML')
+        update.message.reply_text(TEXT_ADMIN_HELP, parse_mode='HTML',
+                                  disable_web_page_preview=True)
         return
     if update.effective_chat.type != "private":
         return
@@ -2166,47 +2312,32 @@ def stats_command(update: Update, context: CallbackContext) -> None:
         return
 
     today = today_local()
+    planned = len(REMINDER_DAYS) + (1 if REMINDER_BEFORE_START else 0)
     lines = []
     for w in upcoming_webinars():
         d = parse_date(w["date"])
-        days = (d - today).days
         key = webinar_key(w)
         count = len(registrations.get(key, set()))
-        done = sorted(e.split("@", 1)[1] for e in reminded_keys
-                      if e.split("@", 1)[0] == key)
-        mark = f" (напоминаний отправлено: {len(done)})" if done else ""
-        lines.append(f"• {w['date']} в {w['time']} — через {days} дн. — "
-                     f"записано {count} чел.{mark}")
+        done = sum(1 for e in reminded_keys if e.split("@", 1)[0] == key)
+        mark = f" (напоминаний отправлено: {done} из {planned})" if done else ""
+        lines.append(f"• {w['date']} в {w['time']} — {days_phrase((d - today).days)}"
+                     f" — записано {count} чел.{mark}")
 
     text = f"Всего зарегистрировано: {len(all_subscribers())} чел.\n\n"
     text += "Ближайшие вебинары:\n" + ("\n".join(lines) if lines
                                        else "— расписание пустое")
-    times = wakeup_times()
+    # Сколько дней подряд — «за 5, 3, 2 и 1 день»
+    days = sorted(REMINDER_DAYS, reverse=True)
+    listed = ", ".join(str(d) for d in days[:-1])
+    listed = (f"{listed} и {days[-1]} " if listed else f"{days[-1]} ") + \
+        plural_ru(days[-1], "день", "дня", "дней") if days else ""
     text += "\n\n" + TEXT_STATS_SCHEDULE.format(
         days=(TEXT_STATS_SCHEDULE_DAYS.format(
-                  list=", ".join(f"за {d} " + plural_ru(d, "день", "дня", "дней")
-                                 for d in sorted(REMINDER_DAYS, reverse=True)),
-                  at=f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}", tz=TIMEZONE_LABEL)
-              if REMINDER_DAYS else TEXT_STATS_SCHEDULE_NO_DAYS),
-        soon=(TEXT_STATS_SCHEDULE_SOON.format(minutes=MINUTES_BEFORE_START,
-                                              wtz=WEBINAR_TIMEZONE_LABEL)
+                  list=listed, at=reminder_time_in(WEBINAR_TIMEZONE))
+              if days else TEXT_STATS_SCHEDULE_NO_DAYS),
+        soon=(TEXT_STATS_SCHEDULE_SOON.format(minutes=MINUTES_BEFORE_START)
               if REMINDER_BEFORE_START else ""),
-        wake=(TEXT_STATS_SCHEDULE_WAKE.format(times=", ".join(times),
-                                              tz=TIMEZONE_LABEL)
-              if times else TEXT_STATS_SCHEDULE_NO_WAKE),
     )
-    if REMINDER_BEFORE_START:
-        # Не «должна работать», а работает ли: берём из настоящего расписания.
-        # Признак — время следующего запуска (у задачи на паузе его нет);
-        # .enabled у найденной задачи в PTB 13 всегда False, на него не смотрим.
-        jobs = (context.job_queue.get_jobs_by_name(SOON_JOB_NAME)
-                if context.job_queue else ())
-        if jobs and jobs[0].next_t:
-            text += "\n\n" + TEXT_STATS_SOON_JOB_ON.format(
-                minutes=SOON_CHECK_MINUTES, tz=TIMEZONE_LABEL,
-                at=jobs[0].next_t.astimezone(TIMEZONE).strftime("%H:%M"))
-        else:
-            text += "\n\n" + TEXT_STATS_SOON_JOB_OFF
 
     if blocked:
         text += "\n\n" + TEXT_STATS_BLOCKED.format(count=len(blocked),
@@ -2227,7 +2358,49 @@ def stats_command(update: Update, context: CallbackContext) -> None:
         text += "\n\n" + TEXT_STATS_DUPLICATES.format(
             items=", ".join(key_label(k) for k in dupes))
 
-    update.message.reply_text(text, parse_mode='HTML')
+    text += "\n\n" + TEXT_STATS_FOOTER
+
+    # Без превью: иначе Телеграм подвешивает к ответу карточку гитхаба,
+    # которая занимает пол-экрана и ничего не объясняет.
+    update.message.reply_text(text, parse_mode='HTML',
+                              disable_web_page_preview=True)
+
+
+def health_command(update: Update, context: CallbackContext) -> None:
+    """/health — техническая проверка: будильники, служебные задания, пояса."""
+    if not is_admin_chat(update):
+        return
+
+    if registry_loaded:
+        loaded = TEXT_HEALTH_LOADED_YES.format(
+            people=len(all_subscribers()),
+            records=records_phrase(sum(len(v) for v in registrations.values())))
+    else:
+        loaded = TEXT_HEALTH_LOADED_NO
+
+    if REMINDER_BEFORE_START:
+        # Не «должна работать», а работает ли: берём из настоящего расписания.
+        # Признак — время следующего запуска (у задачи на паузе его нет);
+        # .enabled у найденной задачи в PTB 13 всегда False, на него не смотрим.
+        jobs = (context.job_queue.get_jobs_by_name(SOON_JOB_NAME)
+                if context.job_queue else ())
+        soon_job = (TEXT_HEALTH_SOON_JOB_ON.format(
+                        minutes=SOON_CHECK_MINUTES, tz=TIMEZONE_LABEL,
+                        at=jobs[0].next_t.astimezone(TIMEZONE).strftime("%H:%M"))
+                    if jobs and jobs[0].next_t else TEXT_HEALTH_SOON_JOB_OFF)
+    else:
+        soon_job = TEXT_HEALTH_SOON_JOB_OFF
+
+    times = wakeup_times()
+    update.message.reply_text(
+        TEXT_HEALTH.format(
+            started=STARTED_AT.strftime("%d.%m.%Y в %H:%M ") + TIMEZONE_LABEL,
+            loaded=loaded, soon_job=soon_job,
+            wake=(TEXT_HEALTH_WAKE.format(times=", ".join(times),
+                                          tz=TIMEZONE_LABEL)
+                  if times else TEXT_HEALTH_NO_WAKE),
+            tz=TIMEZONE_LABEL, wtz=WEBINAR_TIMEZONE_LABEL),
+        parse_mode='HTML', disable_web_page_preview=True)
 
 
 _name_cache = {}
@@ -2762,11 +2935,13 @@ def main() -> None:
 
     dispatcher.add_handler(CommandHandler('start', start))
     dispatcher.add_handler(CommandHandler('register', register))
+    dispatcher.add_handler(CommandHandler('link', link_command))
     dispatcher.add_handler(CommandHandler('questions', questions))
     dispatcher.add_handler(CommandHandler('help', help_command))
     dispatcher.add_handler(CommandHandler('courses', courses))
     dispatcher.add_handler(CommandHandler('id', chat_id_command))
     dispatcher.add_handler(CommandHandler('stats', stats_command))
+    dispatcher.add_handler(CommandHandler('health', health_command))
     dispatcher.add_handler(CommandHandler('broadcast', broadcast_command))
     dispatcher.add_handler(CommandHandler('check', check_command))
     dispatcher.add_handler(CommandHandler('dm', dm_command))
@@ -2784,6 +2959,7 @@ def main() -> None:
     # Служебные команды в меню намеренно не показываем.
     updater.bot.set_my_commands([
         BotCommand("register", "Регистрация на вебинар"),
+        BotCommand("link", "Ссылка на мой вебинар"),
         BotCommand("questions", "Вопросы для спикера"),
         BotCommand("courses", "Все курсы и вебинары Tillo"),
         BotCommand("help", "Помощь"),
