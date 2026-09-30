@@ -1633,10 +1633,12 @@ def _save_registry(bot) -> bool:
                 chat_id=ADMIN_CHAT_ID,
                 message_id=registry_message_id,
                 text=pin_text(snap),
+                disable_web_page_preview=True,
             ))
         else:
             msg = with_retry(lambda: bot.send_message(
-                chat_id=ADMIN_CHAT_ID, text=pin_text(snap)))
+                chat_id=ADMIN_CHAT_ID, text=pin_text(snap),
+                disable_web_page_preview=True))
             registry_message_id = msg.message_id
             bot.pin_chat_message(
                 chat_id=ADMIN_CHAT_ID,
@@ -1812,7 +1814,8 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
                 try:
                     bot.send_message(chat_id=user_id, text=body,
                                      parse_mode=parse_mode,
-                                     reply_markup=text_markup)
+                                     reply_markup=text_markup,
+                                     disable_web_page_preview=True)
                 except BadRequest as e:
                     if not (markup_fallback and parse_mode
                             and is_markup_error(e)):
@@ -1824,7 +1827,8 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
                     markup_error, text, parse_mode = e, plain_text(text), None
                     body = text
                     bot.send_message(chat_id=user_id, text=body,
-                                     parse_mode=None, reply_markup=text_markup)
+                                     parse_mode=None, reply_markup=text_markup,
+                                     disable_web_page_preview=True)
             if media_ok or body:
                 sent += 1
             else:
@@ -2155,7 +2159,8 @@ def wakeup_times(today: datetime.date = None):
 
 def start(update: Update, context: CallbackContext) -> None:
     context.user_data['state'] = None
-    update.message.reply_text(TEXT_START, parse_mode='HTML')
+    update.message.reply_text(TEXT_START, parse_mode='HTML',
+                              disable_web_page_preview=True)
 
 
 def button_label(w) -> str:
@@ -2174,7 +2179,8 @@ def register(update: Update, context: CallbackContext) -> None:
     context.user_data['state'] = None
     upcoming = upcoming_webinars()
     if not upcoming:
-        update.message.reply_text(TEXT_NO_WEBINARS, parse_mode='HTML')
+        update.message.reply_text(TEXT_NO_WEBINARS, parse_mode='HTML',
+                                  disable_web_page_preview=True)
         return
 
     keyboard = [
@@ -2185,6 +2191,7 @@ def register(update: Update, context: CallbackContext) -> None:
         TEXT_REGISTER_PICK,
         parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup(keyboard),
+        disable_web_page_preview=True,
     )
 
 
@@ -2209,12 +2216,14 @@ def tell_tapper(query, text: str) -> None:
     человек должен об этом узнать.
     """
     try:
-        query.edit_message_text(text, parse_mode='HTML')
+        query.edit_message_text(text, parse_mode='HTML',
+                                disable_web_page_preview=True)
         return
     except TelegramError as e:
         logger.warning("Не удалось обновить сообщение с кнопками: %s", e)
     try:
-        query.message.reply_text(text, parse_mode='HTML')
+        query.message.reply_text(text, parse_mode='HTML',
+                                 disable_web_page_preview=True)
     except (TelegramError, AttributeError) as e:
         logger.error("Не удалось ответить на нажатие кнопки: %s", e)
 
@@ -2288,7 +2297,8 @@ def link_command(update: Update, context: CallbackContext) -> None:
             if user_id in registrations.get(webinar_key(w), set())
             and webinar_is_ahead(w, moment)]
     if not mine:
-        update.message.reply_text(TEXT_LINK_NONE, parse_mode='HTML')
+        update.message.reply_text(TEXT_LINK_NONE, parse_mode='HTML',
+                                  disable_web_page_preview=True)
         return
 
     items = []
@@ -2304,7 +2314,8 @@ def link_command(update: Update, context: CallbackContext) -> None:
 
 def questions(update: Update, context: CallbackContext) -> None:
     context.user_data['state'] = 'QUESTIONS'
-    update.message.reply_text(TEXT_QUESTIONS, parse_mode='HTML')
+    update.message.reply_text(TEXT_QUESTIONS, parse_mode='HTML',
+                              disable_web_page_preview=True)
 
 
 def help_command(update: Update, context: CallbackContext) -> None:
@@ -2316,11 +2327,13 @@ def help_command(update: Update, context: CallbackContext) -> None:
         return
     if update.effective_chat.type != "private":
         return
-    update.message.reply_text(TEXT_HELP, parse_mode='HTML')
+    update.message.reply_text(TEXT_HELP, parse_mode='HTML',
+                              disable_web_page_preview=True)
 
 
 def courses(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text(courses_text(), parse_mode='HTML')
+    update.message.reply_text(courses_text(), parse_mode='HTML',
+                              disable_web_page_preview=True)
 
 
 def handle_message(update: Update, context: CallbackContext) -> None:
@@ -2333,7 +2346,8 @@ def handle_message(update: Update, context: CallbackContext) -> None:
     seen_alive(user.id)
 
     if state == 'QUESTIONS':
-        update.message.reply_text(TEXT_QUESTIONS_DONE, parse_mode='HTML')
+        update.message.reply_text(TEXT_QUESTIONS_DONE, parse_mode='HTML',
+                                  disable_web_page_preview=True)
         notify_group(context.bot, TEXT_GROUP_QUESTION.format(
             # текст пользователя экранируем: сообщение уходит как HTML
             question=html.escape(update.message.text),
@@ -2343,7 +2357,8 @@ def handle_message(update: Update, context: CallbackContext) -> None:
         context.user_data['state'] = None
 
     else:
-        update.message.reply_text(TEXT_UNKNOWN, parse_mode='HTML')
+        update.message.reply_text(TEXT_UNKNOWN, parse_mode='HTML',
+                                  disable_web_page_preview=True)
 
 
 # ============================================================================
@@ -2353,7 +2368,8 @@ def handle_message(update: Update, context: CallbackContext) -> None:
 
 def chat_id_command(update: Update, context: CallbackContext) -> None:
     """/id — показывает номер текущего чата. Нужен только при настройке."""
-    update.message.reply_text(f"ID этого чата: {update.effective_chat.id}")
+    update.message.reply_text(f"ID этого чата: {update.effective_chat.id}",
+                              disable_web_page_preview=True)
 
 
 def stats_command(update: Update, context: CallbackContext) -> None:
@@ -2692,11 +2708,13 @@ def who_command(update: Update, context: CallbackContext) -> None:
     if wanted:
         dates = keys_for(wanted)
         if not dates:
-            update.message.reply_text(TEXT_WHO_NO_WEBINAR.format(date=label))
+            update.message.reply_text(TEXT_WHO_NO_WEBINAR.format(date=label),
+                disable_web_page_preview=True)
             return
         if not any(registrations.get(k) for k in dates):
             update.message.reply_text(
-                TEXT_BROADCAST_EMPTY_ONE.format(date=label))
+                TEXT_BROADCAST_EMPTY_ONE.format(date=label),
+                disable_web_page_preview=True)
             return
     else:
         dates = sorted(
@@ -2704,7 +2722,8 @@ def who_command(update: Update, context: CallbackContext) -> None:
             key=lambda k: (key_date(k) or datetime.date.max, k),
         )
     if not dates:
-        update.message.reply_text(TEXT_WHO_EMPTY)
+        update.message.reply_text(TEXT_WHO_EMPTY,
+                                  disable_web_page_preview=True)
         return
 
     # Каждый человек — один раз, сколько бы вебинаров у него ни было.
@@ -2719,7 +2738,8 @@ def who_command(update: Update, context: CallbackContext) -> None:
     pages = -(-len(people) // WHO_MAX)
     if page > pages:
         update.message.reply_text(
-            TEXT_WHO_NO_PAGE.format(page=page, pages=pages))
+            TEXT_WHO_NO_PAGE.format(page=page, pages=pages),
+            disable_web_page_preview=True)
         return
     first = (page - 1) * WHO_MAX
     chunk = people[first:first + WHO_MAX]
@@ -2773,7 +2793,8 @@ def _send_who_page(update, context, label, target, page, people, chunk,
     else:
         footer = TEXT_WHO_PAGE_LAST.format(
             first=first + 1, last=last, total=len(people))
-    update.message.reply_text(footer, parse_mode='HTML')
+    update.message.reply_text(footer, parse_mode='HTML',
+                              disable_web_page_preview=True)
 
 
 def records_phrase(count: int) -> str:
@@ -2812,12 +2833,14 @@ def dm_command(update: Update, context: CallbackContext) -> None:
 
     replied = update.message.reply_to_message
     if not replied:
-        update.message.reply_text(TEXT_DM_NO_REPLY, parse_mode='HTML')
+        update.message.reply_text(TEXT_DM_NO_REPLY, parse_mode='HTML',
+                                  disable_web_page_preview=True)
         return
 
     people = replied_user_ids(replied)
     if not people:
-        update.message.reply_text(TEXT_DM_NO_USER, parse_mode='HTML')
+        update.message.reply_text(TEXT_DM_NO_USER, parse_mode='HTML',
+                                  disable_web_page_preview=True)
         return
     if len(people) > 1:
         # Ни в коем случае не угадываем: личное сообщение ушло бы не тому.
@@ -2828,17 +2851,20 @@ def dm_command(update: Update, context: CallbackContext) -> None:
 
     text = update.message.text.partition(' ')[2].strip()
     if not text:
-        update.message.reply_text(TEXT_DM_NO_TEXT, parse_mode='HTML')
+        update.message.reply_text(TEXT_DM_NO_TEXT, parse_mode='HTML',
+                                  disable_web_page_preview=True)
         return
 
     try:
-        context.bot.send_message(chat_id=user_id, text=text, parse_mode='HTML')
+        context.bot.send_message(chat_id=user_id, text=text, parse_mode='HTML',
+                                 disable_web_page_preview=True)
     except TelegramError as e:
         logger.error("Не удалось написать лично %s: %s", user_id, e)
-        update.message.reply_text(TEXT_DM_FAILED.format(error=e))
+        update.message.reply_text(TEXT_DM_FAILED.format(error=e),
+            disable_web_page_preview=True)
         return
 
-    update.message.reply_text(TEXT_DM_SENT)
+    update.message.reply_text(TEXT_DM_SENT, disable_web_page_preview=True)
 
 
 def broadcast_command(update: Update, context: CallbackContext) -> None:
@@ -2870,11 +2896,13 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
     media = replied_media(replied)
     if replied and not media and (replied.effective_attachment
                                   or replied.poll or replied.dice):
-        update.message.reply_text(TEXT_BROADCAST_UNSUPPORTED)
+        update.message.reply_text(TEXT_BROADCAST_UNSUPPORTED,
+                                  disable_web_page_preview=True)
         return
 
     if not rest and not media:
-        update.message.reply_text(TEXT_BROADCAST_USAGE, parse_mode='HTML')
+        update.message.reply_text(TEXT_BROADCAST_USAGE, parse_mode='HTML',
+                                  disable_web_page_preview=True)
         return
 
     # «30.9.2026 текст» датой не распознаётся — без этой проверки рассылка
@@ -2891,7 +2919,8 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
             key = f"{date_str}-{re.sub(r'[^0-9]', '', time_str)}"
             if not find_webinar(key) and key not in registrations:
                 update.message.reply_text(TEXT_BROADCAST_NO_WEBINAR.format(
-                    date=f"{date_str} в {time_str}"))
+                    date=f"{date_str} в {time_str}"),
+                    disable_web_page_preview=True)
                 return
             keys = [key]
         else:
@@ -2899,7 +2928,8 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
             keys = keys_for(date_str)
             if not keys:
                 update.message.reply_text(
-                    TEXT_BROADCAST_NO_WEBINAR.format(date=date_str))
+                    TEXT_BROADCAST_NO_WEBINAR.format(date=date_str),
+                    disable_web_page_preview=True)
                 return
             sessions = [k for k in keys if not _DATE_ONLY.match(k)]
             if len(sessions) > 1 and not all_sessions:
@@ -2926,7 +2956,8 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
         recipients = reachable(recipients)
         if not recipients:
             update.message.reply_text(
-                TEXT_BROADCAST_EMPTY_ONE.format(date=date_str))
+                TEXT_BROADCAST_EMPTY_ONE.format(date=date_str),
+                disable_web_page_preview=True)
             return
         if time_str:
             label = f"{date_str} в {time_str}"
@@ -2938,7 +2969,8 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
         keys = None                               # всем записавшимся
         recipients = reachable(all_subscribers())
         if not recipients:
-            update.message.reply_text(TEXT_BROADCAST_EMPTY_ALL)
+            update.message.reply_text(TEXT_BROADCAST_EMPTY_ALL,
+                                      disable_web_page_preview=True)
             return
         label = TEXT_BROADCAST_EVERYONE
 
@@ -2948,10 +2980,12 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
     body, buttons, complaint = split_buttons(body)
     body = link_markdown(body)
     if complaint:
-        update.message.reply_text(complaint, parse_mode='HTML')
+        update.message.reply_text(complaint, parse_mode='HTML',
+                                  disable_web_page_preview=True)
         return
     if not body and not media:
-        update.message.reply_text(TEXT_BROADCAST_USAGE, parse_mode='HTML')
+        update.message.reply_text(TEXT_BROADCAST_USAGE, parse_mode='HTML',
+                                  disable_web_page_preview=True)
         return
 
     # Ничего не шлём сразу: сначала показываем, что уйдёт, и спрашиваем
@@ -2981,7 +3015,8 @@ def preview_broadcast(update, context, text, media, keys, label,
                        markup if caption or not text else None)
         if text and not caption:
             bot.send_message(chat_id=ADMIN_CHAT_ID, text=text,
-                             parse_mode='HTML', reply_markup=markup)
+                             parse_mode='HTML', reply_markup=markup,
+                             disable_web_page_preview=True)
     except TelegramError as e:
         reply = (TEXT_BROADCAST_BAD_MARKUP if is_markup_error(e)
                  else TEXT_BROADCAST_PREVIEW_FAILED)
@@ -2997,13 +3032,14 @@ def preview_broadcast(update, context, text, media, keys, label,
     ]]
     update.message.reply_text(
         TEXT_BROADCAST_CONFIRM.format(label=label, count=count),
-        reply_markup=InlineKeyboardMarkup(keyboard))
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        disable_web_page_preview=True)
 
 
 def _edit_question(query, text: str) -> None:
     """Меняет вопрос с кнопками на итог. Не вышло — не беда, главное сделано."""
     try:
-        query.edit_message_text(text)
+        query.edit_message_text(text, disable_web_page_preview=True)
     except TelegramError as e:
         logger.warning("Не удалось обновить вопрос о рассылке: %s", e)
 
@@ -3065,7 +3101,7 @@ def check_command(update: Update, context: CallbackContext) -> None:
         text = TEXT_CHECK_NOTHING
         if cleaned:
             text += TEXT_CHECK_CLEANED.format(count=records_phrase(cleaned))
-        update.message.reply_text(text)
+        update.message.reply_text(text, disable_web_page_preview=True)
 
 
 # ============================================================================
