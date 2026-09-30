@@ -18,6 +18,7 @@ from telegram import (
     BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    Message,
     MessageEntity,
 )
 from telegram.ext import (
@@ -413,6 +414,11 @@ TEXT_BROADCAST_USAGE = (
     "<b>/broadcast 30.09.2026 все</b> Спасибо, что были с нами!\n"
     "— всем сеансам этого дня сразу; кто записан на несколько, получит одно "
     "сообщение. Ссылки на зум так не шлите — у каждого сеанса она своя.\n\n"
+    "<b>Кнопки под сообщением</b>: каждая с новой строки в конце текста —\n"
+    "<code>[Оплатить 1000 ₽](https://pay.cloudtips.ru/p/xxxxx)</code>\n"
+    "Сами строки людям не уйдут, вместо них будут кнопки.\n\n"
+    "<b>Жирный, курсив и ссылку в слове</b> набирайте прямо здесь, как обычно "
+    "в Телеграме — бот их сохранит.\n\n"
     "<b>Картинка, кружок, голосовое, гифка или видео</b>: выложите их сюда в "
     "группу и ответьте на это сообщение (reply) той же командой, например "
     "<b>/broadcast 30.09.2026 11:00</b> Идите все! Текст можно не писать.\n\n"
@@ -475,6 +481,27 @@ TEXT_BROADCAST_BAD_MARKUP = (
     "В тексте ошибка в разметке ({error}) — ничего не отправлено. "
     "Проверьте, что каждый &lt;b&gt; закрыт &lt;/b&gt;."
 )
+# --- Кнопки под рассылкой --------------------------------------------------
+# Строка вида [Текст](https://ссылка) в сообщении превращается в кнопку под
+# ним. Так можно дать людям «Оплатить», «Задать вопрос» и т.п. Кнопки умеет
+# только бот: со своего аккаунта их к сообщению не прикрепить.
+# {line} — строка, которую бот не понял
+TEXT_BROADCAST_BUTTON_BAD = (
+    "Не понял строку с кнопкой:\n{line}\n\n"
+    "Кнопка пишется так, каждая с новой строки:\n"
+    "<code>[Оплатить 1000 ₽](https://pay.cloudtips.ru/p/xxxxx)</code>\n"
+    "Ссылка должна начинаться с https:// — ничего не отправлено."
+)
+# {max} — сколько кнопок можно
+TEXT_BROADCAST_BUTTON_MANY = (
+    "Кнопок слишком много — можно не больше {max}. Ничего не отправлено."
+)
+# {max} — предел длины надписи, {label} — что не влезло
+TEXT_BROADCAST_BUTTON_LONG = (
+    "Надпись на кнопке длиннее {max} знаков — Телеграм её обрежет:\n{label}\n"
+    "Ничего не отправлено."
+)
+
 # Ответ командой на файл, стикер, опрос и т.п. Файлы бот не рассылает нарочно:
 # в этой же группе лежит список записавшихся, и разослать его всем — беда.
 TEXT_BROADCAST_UNSUPPORTED = (
@@ -583,6 +610,13 @@ TEXT_ADMIN_HELP = (
     "кто записан на несколько, получит одно сообщение.\n"
     "<i>Пример:</i> /broadcast 30.09.2026 все Спасибо, что были с нами!\n"
     "Ссылки на зум так не шлите — у каждого сеанса она своя.\n\n"
+
+    "<b>Кнопки и форматирование.</b> Жирный, курсив и ссылку внутри слова "
+    "делайте прямо в поле ввода, как обычно, — бот их сохранит. Кнопку со "
+    "ссылкой добавьте отдельной строкой в конце:\n"
+    "<code>[Оплатить 1000 ₽](https://pay.cloudtips.ru/p/xxxxx)</code>\n"
+    "Таких строк может быть несколько; людям уйдут кнопки, а не текст строк. "
+    "Кнопки умеет прикреплять только бот — со своего аккаунта так нельзя.\n\n"
 
     "<b>Картинку, кружок, голосовое, гифку или видео</b> — выложите сюда и "
     "ответьте на это сообщение (reply) той же командой /broadcast; текст "
@@ -1716,18 +1750,18 @@ def caption_for(media, text):
     return text if len(text.encode("utf-16-le")) // 2 <= CAPTION_LIMIT else None
 
 
-def send_media(bot, chat_id, media, caption=None):
+def send_media(bot, chat_id, media, caption=None, markup=None):
     """Одно медиа по file_id: send_photo(photo=…), send_voice(voice=…) и т.д."""
     kind, file_id = media
     send = getattr(bot, f"send_{kind}")
     if caption:
         return send(chat_id=chat_id, caption=caption, parse_mode='HTML',
-                    **{kind: file_id})
-    return send(chat_id=chat_id, **{kind: file_id})
+                    reply_markup=markup, **{kind: file_id})
+    return send(chat_id=chat_id, reply_markup=markup, **{kind: file_id})
 
 
 def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
-              media=None):
+              media=None, buttons=None):
     """Рассылает текст (и медиа) указанным людям.
 
     Возвращает (доставлено, ошибок, ошибка разметки или None).
@@ -1740,12 +1774,17 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
     sent, failed, gone = 0, 0, []
     parse_mode, markup_error = 'HTML', None
     caption = caption_for(media, text)
+    # Кнопки вешаем на то сообщение, которое человек и увидит: на медиа с
+    # подписью, а иначе на текст.
+    markup = buttons_markup(buttons)
+    media_markup = markup if caption or not text else None
+    text_markup = None if media_markup else markup
     for user_id in sorted(reachable(recipients)):
         try:
             media_ok = False
             if media:
                 try:
-                    send_media(bot, user_id, media, caption)
+                    send_media(bot, user_id, media, caption, media_markup)
                     media_ok = True
                 except TelegramError as e:
                     if is_permanent_failure(e):
@@ -1763,7 +1802,8 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
             if body:
                 try:
                     bot.send_message(chat_id=user_id, text=body,
-                                     parse_mode=parse_mode)
+                                     parse_mode=parse_mode,
+                                     reply_markup=text_markup)
                 except BadRequest as e:
                     if not (markup_fallback and parse_mode
                             and is_markup_error(e)):
@@ -1773,8 +1813,9 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
                     logger.error("Телеграм не понял разметку: %s — отправляю "
                                  "без форматирования", e)
                     markup_error, text, parse_mode = e, plain_text(text), None
-                    bot.send_message(chat_id=user_id, text=text,
-                                     parse_mode=None)
+                    body = text
+                    bot.send_message(chat_id=user_id, text=body,
+                                     parse_mode=None, reply_markup=text_markup)
             if media_ok or body:
                 sent += 1
             else:
@@ -2436,6 +2477,85 @@ _DATE_LIKE = re.compile(r"^\d{1,2}\.\d{1,2}")
 # «/broadcast 30.09.2026 все текст» — всем сеансам этого дня сразу
 _ALL_SESSIONS = ("все", "всё")
 
+# Строка-кнопка: [Надпись](https://ссылка). Пишется с начала строки и занимает
+# её целиком, поэтому с обычным текстом не путается.
+_BUTTON_LINE = re.compile(r"^\[([^\]\n]+)\]\((\S+)\)\s*$")
+BUTTON_MAX = 10           # больше в одном сообщении не нужно никому
+BUTTON_LABEL_MAX = 64     # дальше Телеграм обрезает надпись
+
+
+def split_buttons(body: str):
+    """Вынимает строки-кнопки из текста: (текст без них, [(надпись, ссылка)], ошибка).
+
+    Текст здесь уже HTML, поэтому и надпись, и ссылку возвращаем к обычному
+    виду: в ссылках платёжных систем часто есть «&», а в HTML он записан
+    как «&amp;».
+    """
+    kept, buttons = [], []
+    for line in body.split("\n"):
+        match = _BUTTON_LINE.match(line.strip())
+        if not match:
+            kept.append(line)
+            continue
+        label = html.unescape(match.group(1)).strip()
+        url = html.unescape(match.group(2))
+        if not url.startswith(("https://", "http://", "tg://")):
+            return body, [], TEXT_BROADCAST_BUTTON_BAD.format(
+                line=html.escape(line.strip()))
+        if len(label) > BUTTON_LABEL_MAX:
+            return body, [], TEXT_BROADCAST_BUTTON_LONG.format(
+                max=BUTTON_LABEL_MAX, label=html.escape(label))
+        buttons.append((label, url))
+    if len(buttons) > BUTTON_MAX:
+        return body, [], TEXT_BROADCAST_BUTTON_MANY.format(max=BUTTON_MAX)
+    return "\n".join(kept).strip(), buttons, None
+
+
+def buttons_markup(buttons):
+    """Кнопки в столбик: по одной в ряд — длинные надписи так читаются."""
+    if not buttons:
+        return None
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(label, url=url)] for label, url in buttons])
+
+
+def utf16_len(text: str) -> int:
+    """Длина, как её считает Телеграм: эмодзи и редкие буквы — за два знака."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def command_html(message, rest: str) -> str:
+    """Хвост команды вместе с разметкой, которую человек навёл в Телеграме.
+
+    В message.text форматирования нет вовсе: жирный, курсив и «вшитые» в
+    слово ссылки Телеграм присылает отдельным списком. Раньше бот читал
+    только текст, и всё это молча пропадало — человек писал одно, а людям
+    уходило другое. Собираем из списка тот же HTML, каким бот и рассылает.
+    Не получилось разобрать — возвращаем голый текст, как было.
+    """
+    plain = (message.text or "").rstrip()
+    if not rest or not plain.endswith(rest):
+        return rest
+    cut = utf16_len(plain[:len(plain) - len(rest)])
+    kept = []
+    for e in (message.entities or []):
+        end = e.offset + e.length
+        if end <= cut or e.type == MessageEntity.BOT_COMMAND:
+            continue
+        start = max(e.offset, cut)
+        kept.append(MessageEntity(type=e.type, offset=start - cut,
+                                  length=end - start, url=e.url, user=e.user,
+                                  language=e.language))
+    if not kept:
+        return rest
+    try:
+        tail = Message(message_id=message.message_id, date=message.date,
+                       chat=message.chat, text=rest, entities=kept)
+        return tail.text_html
+    except Exception:            # разметку не собрать — лучше голый текст
+        logger.exception("Не удалось сохранить разметку сообщения")
+        return rest
+
 
 def next_word(text: str):
     """Первое слово и всё остальное: '19:00\\nтекст' -> ('19:00', 'текст').
@@ -2772,9 +2892,20 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
             return
         label = TEXT_BROADCAST_EVERYONE
 
+    # Дальше отправляем не голый текст, а с разметкой, которую человек навёл
+    # прямо в Телеграме, и с кнопками, если он их написал.
+    body = command_html(update.message, rest)
+    body, buttons, complaint = split_buttons(body)
+    if complaint:
+        update.message.reply_text(complaint, parse_mode='HTML')
+        return
+    if not body and not media:
+        update.message.reply_text(TEXT_BROADCAST_USAGE, parse_mode='HTML')
+        return
+
     # Ничего не шлём сразу: сначала показываем, что уйдёт, и спрашиваем
-    preview_broadcast(update, context, rest, media, keys, label,
-                      len(recipients))
+    preview_broadcast(update, context, body, media, keys, label,
+                      len(recipients), buttons)
 
 
 # Рассылки, которые показали, но ещё не отправили: id -> что и кому.
@@ -2784,7 +2915,7 @@ _pending_broadcast = {}
 
 
 def preview_broadcast(update, context, text, media, keys, label,
-                      count) -> None:
+                      count, buttons=None) -> None:
     """Выкладывает в группу ровно то, что уйдёт людям, и кнопки «Отправить/Отмена».
 
     Шлёт так же, как broadcast() — те же send_media() и caption_for(). Это и
@@ -2792,11 +2923,14 @@ def preview_broadcast(update, context, text, media, keys, label,
     """
     bot = context.bot
     caption = caption_for(media, text)
+    markup = buttons_markup(buttons)
     try:
         if media:
-            send_media(bot, ADMIN_CHAT_ID, media, caption)
+            send_media(bot, ADMIN_CHAT_ID, media, caption,
+                       markup if caption or not text else None)
         if text and not caption:
-            bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode='HTML')
+            bot.send_message(chat_id=ADMIN_CHAT_ID, text=text,
+                             parse_mode='HTML', reply_markup=markup)
     except TelegramError as e:
         reply = (TEXT_BROADCAST_BAD_MARKUP if is_markup_error(e)
                  else TEXT_BROADCAST_PREVIEW_FAILED)
@@ -2805,7 +2939,7 @@ def preview_broadcast(update, context, text, media, keys, label,
         return
     pid = secrets.token_hex(4)
     _pending_broadcast[pid] = {"text": text, "media": media, "keys": keys,
-                               "label": label}
+                               "label": label, "buttons": buttons}
     keyboard = [[
         InlineKeyboardButton(TEXT_BROADCAST_BTN_YES, callback_data=f"bc:y:{pid}"),
         InlineKeyboardButton(TEXT_BROADCAST_BTN_NO, callback_data=f"bc:n:{pid}"),
@@ -2856,7 +2990,8 @@ def broadcast_callback(update: Update, context: CallbackContext) -> None:
     _edit_question(query, TEXT_BROADCAST_SENDING.format(
         label=job["label"], count=len(recipients)))
     sent, failed, _ = broadcast(context.bot, job["text"], recipients,
-                                media=job["media"])
+                                media=job["media"],
+                                buttons=job.get("buttons"))
     notify_group(context.bot, TEXT_BROADCAST_DONE.format(sent=sent,
                                                          failed=failed))
 
