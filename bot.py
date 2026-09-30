@@ -1784,11 +1784,30 @@ def remember_album_item(update: Update, context: CallbackContext) -> None:
     media = replied_media(msg)
     if not media or media[0] not in ALBUM_KINDS:
         return
-    group = _albums.pop(msg.media_group_id, {})   # свежий — в конец очереди
-    group[msg.message_id] = media
-    _albums[msg.media_group_id] = group
+    _keep_album(msg.media_group_id, {msg.message_id: media})
+
+
+def _keep_album(group_id, items) -> None:
+    """Добавляет фото к альбому в памяти; самые старые альбомы забываются."""
+    group = _albums.pop(group_id, {})   # свежий — в конец очереди
+    group.update(items)
+    _albums[group_id] = group
     while len(_albums) > ALBUM_KEEP:
         _albums.pop(next(iter(_albums)))
+
+
+def remember_sent_album(messages, items) -> None:
+    """Альбом, который бот выложил сам, — в предпросмотре, — тоже в память.
+
+    Свои сообщения бот не получает, поэтому сам по себе он их не запомнит.
+    А ответить командой на эту копию после «Отмены» — самое естественное, и
+    без этого бот ответил бы, что «перезапускался», хотя это неправда.
+    """
+    messages = list(messages or [])
+    group_id = getattr(messages[0], "media_group_id", None) if messages else None
+    if group_id and len(messages) == len(items):
+        _keep_album(group_id, {m.message_id: item
+                               for m, item in zip(messages, items)})
 
 
 def album_of(message):
@@ -3125,7 +3144,9 @@ def preview_broadcast(update, context, text, media, keys, label,
     caption, media_markup, text_markup = delivery_plan(media, text, buttons)
     try:
         if media:
-            send_media(bot, ADMIN_CHAT_ID, media, caption, media_markup)
+            shown = send_media(bot, ADMIN_CHAT_ID, media, caption, media_markup)
+            if media[0] == "album":
+                remember_sent_album(shown, media[1])
         if text and not caption:
             bot.send_message(chat_id=ADMIN_CHAT_ID, text=text,
                              parse_mode='HTML', reply_markup=text_markup,
