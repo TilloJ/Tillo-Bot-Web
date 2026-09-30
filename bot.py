@@ -18,6 +18,8 @@ from telegram import (
     BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
+    InputMediaVideo,
     Message,
     MessageEntity,
 )
@@ -425,6 +427,9 @@ TEXT_BROADCAST_USAGE = (
     "<b>Картинка, кружок, голосовое, гифка или видео</b>: выложите их сюда в "
     "группу и ответьте на это сообщение (reply) той же командой, например "
     "<b>/broadcast 30.09.2026 11:00</b> Идите все! Текст можно не писать.\n\n"
+    "<b>Альбом</b> (от 2 до 10 фото или видео): выложите его сюда и сразу "
+    "ответьте командой на любое его фото. Кнопок у альбома не бывает, поэтому "
+    "текст с кнопками уйдёт отдельным сообщением сразу после него.\n\n"
     "Бот всегда сначала показывает, что уйдёт, и спрашивает — без кнопки "
     "«✅ Отправить» никому ничего не уйдёт."
 )
@@ -513,6 +518,24 @@ TEXT_BROADCAST_UNSUPPORTED = (
     "Картинку или видео, отправленные «файлом», бот видит как файл — "
     "выложите их заново как фото или видео.\n"
     "Нужен только текст — напишите команду отдельным сообщением, не ответом."
+)
+
+# Ответ командой на фото из альбома, а остальных фото этого альбома бот не
+# видел — чаще всего потому, что сервис перезапускался: альбомы он помнит,
+# только пока работает. Тогда ничего не шлём, иначе ушло бы одно фото вместо
+# всех.
+TEXT_BROADCAST_ALBUM_LOST = (
+    "Это фото из альбома, но остальных его фото бот не видел — скорее всего, "
+    "он перезапускался после того, как альбом выложили. Выложите альбом ещё "
+    "раз и сразу ответьте на любое его фото командой. Ничего не отправлено."
+)
+
+# У альбома не бывает кнопок. Тогда текст с кнопками уходит отдельным
+# сообщением сразу после альбома — а без текста кнопки не на что повесить.
+TEXT_BROADCAST_ALBUM_NEEDS_TEXT = (
+    "К альбому кнопки не прикрепить — так устроен Телеграм. Бот отправит их "
+    "отдельным сообщением сразу после альбома, но для этого нужен хоть какой-то "
+    "текст. Допишите пару слов. Ничего не отправлено."
 )
 
 # Первое слово после /broadcast похоже на дату, но бот его не понял.
@@ -632,6 +655,12 @@ TEXT_ADMIN_HELP = (
     "можно не писать. Именно ответом — команда в подписи к картинке не "
     "сработает.\n\n"
 
+    "<b>Альбом из нескольких фото</b> — выложите его сюда и сразу ответьте "
+    "командой на любое фото альбома; уйдёт весь альбом. Подпись у альбома "
+    "одна, а кнопок не бывает вовсе — если они есть, текст с кнопками уйдёт "
+    "следом отдельным сообщением. Альбом бот помнит, пока не перезапустится, "
+    "поэтому команду лучше отправлять сразу.\n\n"
+
     "<b>Любую рассылку бот сначала показывает</b> — ровно так, как её увидят "
     "люди, — и спрашивает кнопкой. Без «✅ Отправить» никому ничего не уйдёт; "
     "«Отмена» — чтобы просто посмотреть.\n\n"
@@ -718,7 +747,8 @@ TEXT_HEALTH = (
     "<i>Служебные подробности для разработчика. Для работы с вебинарами "
     "хватает /stats.</i>\n\n"
     "Бот запущен: {started}.\n"
-    "Список записавшихся прочитан: {loaded}\n\n"
+    "Список записавшихся прочитан: {loaded}\n"
+    "Альбомов в памяти (для рассылки): {albums}.\n\n"
     "{soon_job}\n\n"
     "<b>Будильники</b>\n"
     "{wake}\n\n"
@@ -1735,6 +1765,41 @@ def plain_text(text: str) -> str:
 # и «файл», поэтому сначала ищем своё и только потом отказываем.
 MEDIA_KINDS = ("video_note", "photo", "voice", "animation", "video")
 CAPTION_LIMIT = 1024       # столько знаков Телеграм разрешает в подписи
+ALBUM_KINDS = ("photo", "video")   # только из этого Телеграм собирает альбом
+ALBUM_KEEP = 20                    # сколько последних альбомов помнить
+
+# Альбомы, которые выкладывали в группу: media_group_id -> {message_id:
+# (вид, file_id)}. Каждое фото альбома приходит боту отдельным сообщением —
+# бот в группе администратор, а администраторы видят всё. Ответ командой
+# приносит только одно фото, поэтому остальные собираем здесь. Только в
+# памяти: после перезапуска альбом надо выложить заново.
+_albums = {}
+
+
+def remember_album_item(update: Update, context: CallbackContext) -> None:
+    """Запоминает фото или видео из альбома, выложенного в группу."""
+    msg = update.effective_message
+    if not (msg and msg.media_group_id) or not is_admin_chat(update):
+        return
+    media = replied_media(msg)
+    if not media or media[0] not in ALBUM_KINDS:
+        return
+    group = _albums.pop(msg.media_group_id, {})   # свежий — в конец очереди
+    group[msg.message_id] = media
+    _albums[msg.media_group_id] = group
+    while len(_albums) > ALBUM_KEEP:
+        _albums.pop(next(iter(_albums)))
+
+
+def album_of(message):
+    """Все фото и видео альбома, к которому относится сообщение, по порядку."""
+    group = _albums.get(message.media_group_id) or {}
+    return tuple(group[k] for k in sorted(group))
+
+
+def media_weight(media) -> int:
+    """Сколько сообщений это для Телеграма: альбом из пяти фото — пять."""
+    return len(media[1]) if media and media[0] == "album" else 1
 
 
 def replied_media(message):
@@ -1761,9 +1826,38 @@ def caption_for(media, text):
     return text if len(text.encode("utf-16-le")) // 2 <= CAPTION_LIMIT else None
 
 
+def delivery_plan(media, text, buttons):
+    """Как разложить рассылку по сообщениям: (подпись, кнопки медиа, кнопки текста).
+
+    Одно правило и для предпросмотра, и для рассылки — иначе в группе
+    показывалось бы одно, а людям уходило другое. Кнопки висят на том
+    сообщении, которое человек увидит: на медиа с подписью, а иначе на тексте.
+    У альбома кнопок не бывает — с ними текст всегда идёт отдельно.
+    """
+    markup = buttons_markup(buttons)
+    album = bool(media) and media[0] == "album"
+    caption = None if (album and markup) else caption_for(media, text)
+    separate_text = bool(text) and not caption
+    media_markup = None if (album or separate_text) else markup
+    text_markup = markup if separate_text else None
+    return caption, media_markup, text_markup
+
+
 def send_media(bot, chat_id, media, caption=None, markup=None):
-    """Одно медиа по file_id: send_photo(photo=…), send_voice(voice=…) и т.д."""
+    """Одно медиа по file_id: send_photo(photo=…), send_voice(voice=…) и т.д.
+
+    Альбом — ("album", ((вид, file_id), …)) — уходит одним сообщением. Подпись
+    у него одна, на первом фото, а кнопок не бывает вовсе: так устроен
+    Телеграм, поэтому delivery_plan() их сюда и не даёт.
+    """
     kind, file_id = media
+    if kind == "album":
+        items = []
+        for i, (k, fid) in enumerate(file_id):
+            cls = InputMediaPhoto if k == "photo" else InputMediaVideo
+            items.append(cls(fid, caption=caption, parse_mode='HTML')
+                         if i == 0 and caption else cls(fid))
+        return bot.send_media_group(chat_id=chat_id, media=items)
     send = getattr(bot, f"send_{kind}")
     if caption:
         return send(chat_id=chat_id, caption=caption, parse_mode='HTML',
@@ -1784,18 +1878,16 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
     """
     sent, failed, gone = 0, 0, []
     parse_mode, markup_error = 'HTML', None
-    caption = caption_for(media, text)
-    # Кнопки вешаем на то сообщение, которое человек и увидит: на медиа с
-    # подписью, а иначе на текст.
-    markup = buttons_markup(buttons)
-    media_markup = markup if caption or not text else None
-    text_markup = None if media_markup else markup
+    caption, media_markup, text_markup = delivery_plan(media, text, buttons)
     for user_id in sorted(reachable(recipients)):
         try:
             media_ok = False
             if media:
                 try:
-                    send_media(bot, user_id, media, caption, media_markup)
+                    # Телеграм просит подождать — ждём и повторяем: раньше
+                    # такой человек молча оставался без рассылки
+                    with_retry(lambda: send_media(bot, user_id, media, caption,
+                                                  media_markup))
                     media_ok = True
                 except TelegramError as e:
                     if is_permanent_failure(e):
@@ -1810,12 +1902,16 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
                     logger.warning("%s не дошло до %s (%s) — шлю текст",
                                    media[0], user_id, e)
             body = "" if (media_ok and caption) else text
+            # Медиа с подписью не дошло — текст уходит один, и кнопки с медиа
+            # переезжают на него: в нём же и ссылка
+            body_markup = (text_markup if (media_ok or not caption)
+                           else (media_markup or text_markup))
             if body:
                 try:
-                    bot.send_message(chat_id=user_id, text=body,
-                                     parse_mode=parse_mode,
-                                     reply_markup=text_markup,
-                                     disable_web_page_preview=True)
+                    with_retry(lambda: bot.send_message(
+                        chat_id=user_id, text=body, parse_mode=parse_mode,
+                        reply_markup=body_markup,
+                        disable_web_page_preview=True))
                 except BadRequest as e:
                     if not (markup_fallback and parse_mode
                             and is_markup_error(e)):
@@ -1827,7 +1923,7 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
                     markup_error, text, parse_mode = e, plain_text(text), None
                     body = text
                     bot.send_message(chat_id=user_id, text=body,
-                                     parse_mode=None, reply_markup=text_markup,
+                                     parse_mode=None, reply_markup=body_markup,
                                      disable_web_page_preview=True)
             if media_ok or body:
                 sent += 1
@@ -1842,8 +1938,9 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
                 logger.warning("Не доставлено %s (временная ошибка, оставляю "
                                "в списке): %s", user_id, e)
         # чтобы не упереться в лимиты Телеграма; с медиа бывает и второе
-        # сообщение тому же человеку, поэтому помедленнее
-        time.sleep(0.1 if media else 0.05)
+        # сообщение тому же человеку, а альбом из пяти фото для Телеграма —
+        # пять сообщений, поэтому чем больше, тем медленнее
+        time.sleep(0.05 * (media_weight(media) + 1) if media else 0.05)
 
     if gone:
         # Не удаляем: человек остаётся в списке и в файле, но с пометкой —
@@ -2461,7 +2558,7 @@ def health_command(update: Update, context: CallbackContext) -> None:
     update.message.reply_text(
         TEXT_HEALTH.format(
             started=STARTED_AT.strftime("%d.%m.%Y в %H:%M ") + TIMEZONE_LABEL,
-            loaded=loaded, soon_job=soon_job,
+            loaded=loaded, soon_job=soon_job, albums=len(_albums),
             wake=(TEXT_HEALTH_WAKE.format(times=", ".join(times),
                                           tz=TIMEZONE_LABEL)
                   if times else TEXT_HEALTH_NO_WAKE),
@@ -2902,6 +2999,15 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
         update.message.reply_text(TEXT_BROADCAST_UNSUPPORTED,
                                   disable_web_page_preview=True)
         return
+    # Ответ на фото из альбома — рассылаем весь альбом. Если бот видел из
+    # него меньше двух фото, лучше отказать, чем молча разослать одно.
+    if media and replied.media_group_id:
+        album = album_of(replied)
+        if len(album) < 2:
+            update.message.reply_text(TEXT_BROADCAST_ALBUM_LOST,
+                                      disable_web_page_preview=True)
+            return
+        media = ("album", album)
 
     if not rest and not media:
         update.message.reply_text(TEXT_BROADCAST_USAGE, parse_mode='HTML',
@@ -2992,6 +3098,10 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
         update.message.reply_text(TEXT_BROADCAST_USAGE, parse_mode='HTML',
                                   disable_web_page_preview=True)
         return
+    if buttons and not body and media and media[0] == "album":
+        update.message.reply_text(TEXT_BROADCAST_ALBUM_NEEDS_TEXT,
+                                  disable_web_page_preview=True)
+        return
 
     # Ничего не шлём сразу: сначала показываем, что уйдёт, и спрашиваем
     preview_broadcast(update, context, body, media, keys, label,
@@ -3012,15 +3122,13 @@ def preview_broadcast(update, context, text, media, keys, label,
     проверка: если здесь не вышло, людям тоже не выйдет, и спрашивать не о чем.
     """
     bot = context.bot
-    caption = caption_for(media, text)
-    markup = buttons_markup(buttons)
+    caption, media_markup, text_markup = delivery_plan(media, text, buttons)
     try:
         if media:
-            send_media(bot, ADMIN_CHAT_ID, media, caption,
-                       markup if caption or not text else None)
+            send_media(bot, ADMIN_CHAT_ID, media, caption, media_markup)
         if text and not caption:
             bot.send_message(chat_id=ADMIN_CHAT_ID, text=text,
-                             parse_mode='HTML', reply_markup=markup,
+                             parse_mode='HTML', reply_markup=text_markup,
                              disable_web_page_preview=True)
     except TelegramError as e:
         reply = (TEXT_BROADCAST_BAD_MARKUP if is_markup_error(e)
@@ -3181,6 +3289,10 @@ def main() -> None:
         CallbackQueryHandler(broadcast_callback, pattern=r'^(bc|vn):'))
     dispatcher.add_handler(
         MessageHandler(Filters.text & ~Filters.command, handle_message)
+    )
+    # Фото и видео из альбомов, выложенных в группу, — для /broadcast
+    dispatcher.add_handler(
+        MessageHandler(Filters.photo | Filters.video, remember_album_item)
     )
 
     # Именно это создаёт кнопку "Меню" рядом с полем ввода.
