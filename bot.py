@@ -1306,7 +1306,7 @@ def snapshot():
 
 def now_msk() -> str:
     """Время записи — по Москве, как и время вебинаров: '2026-09-25 17:24'."""
-    return datetime.datetime.now(WEBINAR_TIMEZONE).strftime("%Y-%m-%d %H:%M")
+    return now_local().astimezone(WEBINAR_TIMEZONE).strftime("%Y-%m-%d %H:%M")
 
 
 def remember_person(user_id: int, name: str, username: str) -> None:
@@ -2061,7 +2061,7 @@ def send_start_reminders(bot, now: datetime.datetime = None) -> int:
 
 def _send_start_reminders(bot, now: datetime.datetime = None) -> int:
     if now is None:
-        now = datetime.datetime.now(TIMEZONE)
+        now = now_local()
 
     total = 0
     warned = set()   # о какой поломке шаблона уже написали в группу
@@ -2699,7 +2699,8 @@ def who_command(update: Update, context: CallbackContext) -> None:
     if extra or page < 1:
         update.message.reply_text(
             TEXT_WHO_BAD_ARGS.format(text=html.escape(extra or str(page))),
-            parse_mode='HTML')
+            parse_mode='HTML',
+            disable_web_page_preview=True)
         return
 
     wanted = f"{w_date}-{re.sub(r'[^0-9]', '', w_time)}" if w_time else w_date
@@ -2747,7 +2748,8 @@ def who_command(update: Update, context: CallbackContext) -> None:
     global _last_who_page
     wait = 60 - (time.time() - _last_who_page)
     if wait > 0:
-        update.message.reply_text(TEXT_WHO_WAIT.format(seconds=int(wait) + 1))
+        update.message.reply_text(TEXT_WHO_WAIT.format(seconds=int(wait) + 1),
+                                  disable_web_page_preview=True)
         return
     try:
         _send_who_page(update, context, label, target, page, people, chunk,
@@ -2845,7 +2847,8 @@ def dm_command(update: Update, context: CallbackContext) -> None:
     if len(people) > 1:
         # Ни в коем случае не угадываем: личное сообщение ушло бы не тому.
         update.message.reply_text(
-            TEXT_DM_AMBIGUOUS.format(count=len(people)), parse_mode='HTML')
+            TEXT_DM_AMBIGUOUS.format(count=len(people)), parse_mode='HTML',
+            disable_web_page_preview=True)
         return
     user_id = people[0]
 
@@ -2911,7 +2914,8 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
     if not date_str and _DATE_LIKE.match(first_word):
         update.message.reply_text(
             TEXT_BROADCAST_BAD_DATE.format(token=html.escape(first_word)),
-            parse_mode='HTML')
+            parse_mode='HTML',
+            disable_web_page_preview=True)
         return
 
     if date_str:
@@ -2948,7 +2952,8 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
                     TEXT_BROADCAST_PICK_TIME.format(
                         date=date_str, items="\n".join(items),
                         example=f"{date_str} {key_time(sessions[0])}"),
-                    parse_mode='HTML')
+                    parse_mode='HTML',
+                    disable_web_page_preview=True)
                 return
         recipients = set()
         for key in keys:
@@ -3021,7 +3026,8 @@ def preview_broadcast(update, context, text, media, keys, label,
         reply = (TEXT_BROADCAST_BAD_MARKUP if is_markup_error(e)
                  else TEXT_BROADCAST_PREVIEW_FAILED)
         update.message.reply_text(reply.format(error=html.escape(str(e))),
-                                  parse_mode='HTML')
+                                  parse_mode='HTML',
+                                  disable_web_page_preview=True)
         return
     pid = secrets.token_hex(4)
     _pending_broadcast[pid] = {"text": text, "media": media, "keys": keys,
