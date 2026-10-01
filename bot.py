@@ -1,6 +1,7 @@
 import datetime
 import html
 import io
+import itertools
 import logging
 import os
 import re
@@ -125,12 +126,17 @@ REMINDER_DAYS = [5, 3, 2, 1]
 
 # Напоминать ли ещё и незадолго до начала.
 # ВАЖНО: это работает, только если сервис в этот момент не спит. Какие
-# будильники нужны и во сколько — показывает команда /stats.
+# будильники нужны и во сколько — показывает команда /health.
 REMINDER_BEFORE_START = True
 
 # За сколько минут до начала отправлять это напоминание. Окно с запасом:
 # если сервис проснулся где-то внутри него, напоминание всё равно уйдёт.
 MINUTES_BEFORE_START = 75
+
+# По скольким последним опросам бот ведёт счёт ответов. Счёт хранится в
+# закреплённом сообщении, поэтому много не надо: по старому опросу ответ всё
+# равно придёт в группу, только без общего счёта.
+POLL_KEEP = 10
 
 # ============================================================================
 # ССЫЛКИ НА ЭТОТ ЖЕ ФАЙЛ НА ГИТХАБЕ
@@ -361,6 +367,35 @@ TEXT_GROUP_REGISTRATION = (
     "{user} ({username})"
 )
 
+# --- Опросы -------------------------------------------------------------------
+# Строки вида [Да] и [Нет] в рассылке (каждая отдельной строкой, без ссылки)
+# становятся кнопками-ответами. Нужно хотя бы две — одна строка в скобках
+# остаётся обычным текстом.
+# Ответ человека в группу. {question} — последняя строка рассылки (обычно
+# это и есть вопрос), {user} —
+# имя (нажимается), {username} — @ник, {answer} — что выбрал, {tally} — счёт.
+TEXT_GROUP_POLL_ANSWER = (
+    "📊 {question}\n"
+    "{user} ({username}): <b>{answer}</b>\n"
+    "Счёт: {tally}"
+)
+# То же, но для старого опроса, счёт которого бот уже не хранит
+TEXT_GROUP_POLL_ANSWER_NO_COUNT = (
+    "📊 {question}\n"
+    "{user} ({username}): <b>{answer}</b>\n"
+    "<i>(опрос старый — счёт по нему бот уже не ведёт)</i>"
+)
+# Человеку — после того как его ответ записан. {answer} — что он выбрал.
+TEXT_POLL_THANKS = "Спасибо! Ваш ответ: <b>{answer}</b> 🙂"
+# Если ответ записать не удалось — кнопки остаются, человек нажмёт ещё раз
+TEXT_POLL_FAILED = (
+    "Не получилось записать ответ — нажмите, пожалуйста, кнопку ещё раз "
+    "чуть позже."
+)
+# Всплывающие подсказки на кнопке (без форматирования)
+TEXT_POLL_ALREADY = "Ваш ответ уже записан, спасибо!"
+TEXT_POLL_PREVIEW_TAP = "Это предпросмотр — здесь ответы не считаются."
+
 TEXT_GROUP_QUESTION = (
     "❓ Вопрос спикеру: {question}\n"
     "От: {user} ({username})"
@@ -427,6 +462,9 @@ TEXT_BROADCAST_USAGE = (
     "<b>Картинка, кружок, голосовое, гифка или видео</b>: выложите их сюда в "
     "группу и ответьте на это сообщение (reply) той же командой, например "
     "<b>/broadcast 30.09.2026 11:00</b> Идите все! Текст можно не писать.\n\n"
+    "<b>Опрос</b>: варианты ответа — каждый отдельной строкой в квадратных "
+    "скобках, без ссылки:\n<code>[Да]</code>\n<code>[Нет]</code>\n"
+    "Каждый ответ придёт сюда с именем и общим счётом.\n\n"
     "<b>Альбом</b> (от 2 до 10 фото или видео): выложите его сюда и сразу "
     "ответьте командой на любое его фото. Кнопок у альбома не бывает, поэтому "
     "текст с кнопками уйдёт отдельным сообщением сразу после него.\n\n"
@@ -501,6 +539,12 @@ TEXT_BROADCAST_BUTTON_BAD = (
     "Ссылка должна начинаться с https:// — ничего не отправлено."
 )
 # {max} — сколько кнопок можно
+# В одной рассылке два вопроса со своими вариантами: бот склеил бы их в один
+# опрос с четырьмя кнопками, поэтому отказывает.
+TEXT_BROADCAST_TWO_POLLS = (
+    "В одной рассылке — один опрос: варианты ответа должны идти подряд. "
+    "Второй вопрос отправьте отдельной рассылкой. Ничего не отправлено."
+)
 TEXT_BROADCAST_BUTTON_MANY = (
     "Кнопок слишком много — можно не больше {max}. Ничего не отправлено."
 )
@@ -654,6 +698,12 @@ TEXT_ADMIN_HELP = (
     "ответьте на это сообщение (reply) той же командой /broadcast; текст "
     "можно не писать. Именно ответом — команда в подписи к картинке не "
     "сработает.\n\n"
+
+    "<b>Опрос.</b> Варианты ответа напишите в конце рассылки, каждый "
+    "отдельной строкой в квадратных скобках и без ссылки — "
+    "<code>[Да]</code>, <code>[Нет]</code>. Нужно хотя бы два. Людям придут "
+    "кнопки; кто ответит, тот появится здесь с именем и общим счётом. Счёт "
+    "бот помнит по последним " + str(POLL_KEEP) + " опросам.\n\n"
 
     "<b>Альбом из нескольких фото</b> — выложите его сюда и сразу ответьте "
     "командой на любое фото альбома; уйдёт весь альбом. Подпись у альбома "
@@ -1098,6 +1148,19 @@ prev_pointer = None
 # удаление старых файлов не может испортить текущий, и в группе их не больше
 # двух. False — оставлять все (безопасно, но по файлу на каждое сохранение).
 DELETE_OLD_REGISTRY_FILES = True
+# Опросы: номер опроса -> сколько людей выбрали каждый вариант. Живут в
+# закреплённом сообщении строками «POLL:номер:12,3» — рядом с отметками о
+# напоминаниях, потому что ответы идут часами, а сервис за это время много
+# раз засыпает: счёт только в памяти обнулялся бы и врал. Помним последние
+# POLL_KEEP опросов (настройка наверху файла), чтобы закреп не рос.
+poll_counts = {}
+# Закреп ровно в том виде, в каком его последний раз прочли или записали.
+# Голос в опросе переписывает в нём только строки POLL — всё остальное
+# («Всего», отметки, указатель на файл) остаётся этим текстом.
+last_pin_text = None
+# Кто уже ответил (опрос, человек) — от двойного нажатия. Только в памяти:
+# после ответа кнопки у человека исчезают, повторно нажать ему нечего.
+_voted = set()
 # Сохранения идут по одному: напоминания рассылаются в своём потоке, и два
 # сохранения сразу могли бы записать в файл и в сообщение разное.
 _save_lock = threading.Lock()
@@ -1461,6 +1524,7 @@ def load_registry(bot) -> bool:
     пока группа была недоступна, переживает повторное чтение перед записью.
     """
     global registry_message_id, registry_loaded, file_pointer, prev_pointer
+    global last_pin_text
     global _read_failures, _reported_foreign_pin
 
     if not ADMIN_CHAT_ID:
@@ -1546,6 +1610,13 @@ def load_registry(bot) -> bool:
             signed_at.setdefault(pair, when)
         blocked.update(blk)
     reminded_keys.update(sent)
+    # Счета опросов: из закрепа, но то, что память уже насчитала, не теряем
+    for pid, counts in parse_polls(pinned.text).items():
+        mine = poll_counts.get(pid, [])
+        merged = [max(a, b) for a, b in itertools.zip_longest(
+            counts, mine, fillvalue=0)]
+        _keep_poll(pid, merged)
+    last_pin_text = pinned.text
     _read_failures = 0
 
     logger.info(
@@ -1573,7 +1644,105 @@ def pin_text(snap) -> str:
         lines.append(f"FILE:{file_pointer[0]}:{file_pointer[1]}")
     if prev_pointer:
         lines.append(f"PREV:{prev_pointer[0]}:{prev_pointer[1]}")
-    return "\n".join(lines)
+    return "\n".join(lines + poll_lines())
+
+
+# Строка счёта опроса в закрепе. Номер — 8 шестнадцатеричных знаков, поэтому
+# со строкой списка («30.09.2026:…») её не спутать — ни этой версии, ни
+# старым: они все пропускают строки, которых не знают.
+_POLL_LINE = re.compile(r"^POLL:([0-9a-f]{8}):(\d+(?:,\d+)*)$")
+
+
+def poll_lines():
+    return [f"POLL:{pid}:{','.join(str(n) for n in counts)}"
+            for pid, counts in poll_counts.items()]
+
+
+def parse_polls(text: str):
+    """Счета опросов из закреплённого сообщения: {номер: [12, 3]}."""
+    polls = {}
+    for line in (text or "").split("\n"):
+        match = _POLL_LINE.match(line.strip())
+        if match:
+            polls[match.group(1)] = [int(n) for n in match.group(2).split(",")]
+    return polls
+
+
+def _keep_poll(poll_id, counts) -> None:
+    poll_counts[poll_id] = counts
+    while len(poll_counts) > POLL_KEEP:
+        poll_counts.pop(next(iter(poll_counts)))
+
+
+def _write_poll_lines(bot) -> bool:
+    """Переписывает в закрепе только строки POLL. Вызывать под _save_lock.
+
+    Всё остальное остаётся ровно таким, каким его последний раз прочли или
+    записали: голос не должен трогать сам список. Иначе «Всего» в закрепе
+    могло бы разойтись с файлом, а на такой закреп бот при чтении не
+    полагается — и запись на вебинары встала бы.
+    """
+    global last_pin_text
+    if not (registry_loaded and registry_message_id and last_pin_text):
+        return False
+    kept = [line for line in last_pin_text.split("\n")
+            if not line.startswith("POLL:")]
+    text = "\n".join(kept + poll_lines())
+    if text == last_pin_text:
+        return True
+    try:
+        with_retry(lambda: bot.edit_message_text(
+            chat_id=ADMIN_CHAT_ID, message_id=registry_message_id, text=text,
+            disable_web_page_preview=True))
+    except BadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            logger.error("Не удалось записать счёт опроса: %s", e)
+            return False
+    except TelegramError as e:
+        logger.error("Не удалось записать счёт опроса: %s", e)
+        return False
+    last_pin_text = text
+    return True
+
+
+def start_poll(bot, poll_id: str, options: int) -> None:
+    """Заводит счёт опроса с нулями — сразу, как только рассылку отправили.
+
+    Тогда «опроса нет в закрепе» значит одно: он старый и вытеснен. Ответ на
+    такой придёт в группу без счёта — лучше без счёта, чем с неверным.
+    """
+    with _save_lock:
+        if poll_id not in poll_counts:
+            _keep_poll(poll_id, [0] * options)
+        if not _write_poll_lines(bot):
+            # не беда: счёт есть в памяти и запишется с первым же голосом
+            logger.warning("Счёт опроса %s пока не записан в закреп", poll_id)
+
+
+VOTE_FAILED = "failed"        # голос не записан — кнопки оставляем
+VOTE_UNKNOWN = "unknown"      # опрос старый, счёта нет — ответ без счёта
+
+
+def record_vote(bot, poll_id: str, index: int, options: int):
+    """Записывает голос: новый счёт списком, VOTE_UNKNOWN или VOTE_FAILED.
+
+    Сначала в закреп, потом всё остальное — как с регистрацией: человеку
+    нельзя сказать «спасибо, учли», если голос никуда не записан.
+    """
+    with _save_lock:
+        # Список не прочитан — значит, и счёт неизвестен: «нет такого опроса»
+        # тут ещё ничего не значит
+        if not (registry_loaded or load_registry(bot)):
+            return VOTE_FAILED
+        counts = poll_counts.get(poll_id)
+        if counts is None:
+            return VOTE_UNKNOWN
+        counts.extend([0] * (options - len(counts)))
+        counts[index] += 1
+        if not _write_poll_lines(bot):
+            counts[index] -= 1
+            return VOTE_FAILED
+        return list(counts)
 
 
 def with_retry(call):
@@ -1610,7 +1779,7 @@ def save_registry(bot) -> bool:
 
 
 def _save_registry(bot) -> bool:
-    global registry_message_id, file_pointer, prev_pointer
+    global registry_message_id, file_pointer, prev_pointer, last_pin_text
 
     if not ADMIN_CHAT_ID:
         # Режим без группы (локальный запуск): сохранять негде, но и падать
@@ -1657,17 +1826,18 @@ def _save_registry(bot) -> bool:
     old_file, old_prev = file_pointer, prev_pointer
     file_pointer = (doc.message_id, doc.document.file_id)
     prev_pointer = old_file
+    new_pin = pin_text(snap)
     try:
         if registry_message_id:
             with_retry(lambda: bot.edit_message_text(
                 chat_id=ADMIN_CHAT_ID,
                 message_id=registry_message_id,
-                text=pin_text(snap),
+                text=new_pin,
                 disable_web_page_preview=True,
             ))
         else:
             msg = with_retry(lambda: bot.send_message(
-                chat_id=ADMIN_CHAT_ID, text=pin_text(snap),
+                chat_id=ADMIN_CHAT_ID, text=new_pin,
                 disable_web_page_preview=True))
             registry_message_id = msg.message_id
             bot.pin_chat_message(
@@ -1679,6 +1849,7 @@ def _save_registry(bot) -> bool:
         file_pointer, prev_pointer = old_file, old_prev
         logger.error("Не удалось сохранить список подписчиков: %s", e)
         return False
+    last_pin_text = new_pin
 
     # 3. Файл старше предыдущего больше нигде не упомянут
     if old_prev and DELETE_OLD_REGISTRY_FILES:
@@ -1706,8 +1877,11 @@ def notify_group(bot, text: str) -> None:
     if not ADMIN_CHAT_ID:
         return
     try:
-        bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode='HTML',
-                         disable_web_page_preview=True)
+        # В группу Телеграм пускает ~20 сообщений в минуту, а ответы на опрос
+        # и регистрации приходят пачками: короткую паузу пережидаем
+        with_retry(lambda: bot.send_message(
+            chat_id=ADMIN_CHAT_ID, text=text, parse_mode='HTML',
+            disable_web_page_preview=True))
     except TelegramError as e:
         logger.error(
             "Не удалось написать в группу %s: %s. Проверьте ADMIN_CHAT_ID "
@@ -1845,7 +2019,7 @@ def caption_for(media, text):
     return text if len(text.encode("utf-16-le")) // 2 <= CAPTION_LIMIT else None
 
 
-def delivery_plan(media, text, buttons):
+def delivery_plan(media, text, buttons, poll_id=None):
     """Как разложить рассылку по сообщениям: (подпись, кнопки медиа, кнопки текста).
 
     Одно правило и для предпросмотра, и для рассылки — иначе в группе
@@ -1853,7 +2027,7 @@ def delivery_plan(media, text, buttons):
     сообщении, которое человек увидит: на медиа с подписью, а иначе на тексте.
     У альбома кнопок не бывает — с ними текст всегда идёт отдельно.
     """
-    markup = buttons_markup(buttons)
+    markup = buttons_markup(buttons, poll_id)
     album = bool(media) and media[0] == "album"
     caption = None if (album and markup) else caption_for(media, text)
     separate_text = bool(text) and not caption
@@ -1885,7 +2059,7 @@ def send_media(bot, chat_id, media, caption=None, markup=None):
 
 
 def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
-              media=None, buttons=None):
+              media=None, buttons=None, poll_id=None):
     """Рассылает текст (и медиа) указанным людям.
 
     Возвращает (доставлено, ошибок, ошибка разметки или None).
@@ -1897,7 +2071,8 @@ def broadcast(bot, text: str, recipients, markup_fallback: bool = False,
     """
     sent, failed, gone = 0, 0, []
     parse_mode, markup_error = 'HTML', None
-    caption, media_markup, text_markup = delivery_plan(media, text, buttons)
+    caption, media_markup, text_markup = delivery_plan(media, text, buttons,
+                                                       poll_id)
     for user_id in sorted(reachable(recipients)):
         try:
             media_ok = False
@@ -2311,7 +2486,7 @@ def register(update: Update, context: CallbackContext) -> None:
     )
 
 
-def answer_tap(query) -> None:
+def answer_tap(query, text=None) -> None:
     """Гасит «часики» на кнопке. Не вышло — нажатие всё равно выполняем.
 
     Обработчики идут по одному, а рассылка на полторы сотни человек занимает
@@ -2320,7 +2495,9 @@ def answer_tap(query) -> None:
     и человек оставался незаписанным и без ответа.
     """
     try:
-        query.answer()   # без этого кнопка «крутится» у пользователя
+        # без этого кнопка «крутится» у пользователя; text — всплывающая
+        # подсказка
+        query.answer(text=text) if text else query.answer()
     except TelegramError as e:
         logger.warning("Не удалось ответить на нажатие кнопки: %s", e)
 
@@ -2342,6 +2519,106 @@ def tell_tapper(query, text: str) -> None:
                                  disable_web_page_preview=True)
     except (TelegramError, AttributeError) as e:
         logger.error("Не удалось ответить на нажатие кнопки: %s", e)
+
+
+def poll_labels(markup):
+    """Надписи кнопок-ответов по порядку — из самого сообщения с опросом."""
+    labels = {}
+    for row in (markup.inline_keyboard if markup else []):
+        for button in row:
+            data = button.callback_data or ""
+            if data.startswith("pv:"):
+                try:
+                    labels[int(data.rsplit(":", 1)[1])] = button.text
+                except ValueError:
+                    pass
+    return [labels.get(i, "?") for i in range(max(labels) + 1)] if labels else []
+
+
+def poll_question(message) -> str:
+    """Сам вопрос — по нему в группе видно, на какой опрос ответ.
+
+    Берём последнюю строку текста: вопрос обычно стоит прямо перед
+    вариантами, а первой строкой часто бывает «Привет!».
+    """
+    text = (message.text or message.caption or "").strip()
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    last = lines[-1] if lines else ""
+    return last if len(last) <= 80 else last[:79] + "…"
+
+
+def poll_callback(update: Update, context: CallbackContext) -> None:
+    """Нажатие на вариант ответа под рассылкой.
+
+    Всё нужное — вопрос, надписи, кто нажал — приходит вместе с нажатием,
+    поэтому ответ переживает и перезапуск, и сон сервиса. В памяти только
+    счёт, и тот записан в закрепе.
+    """
+    query = update.callback_query
+    message = query.message
+    try:
+        _, poll_id, index = (query.data or "").split(":")
+        index = int(index)
+    except ValueError:
+        answer_tap(query)
+        return
+    # Кнопки в предпросмотре — настоящие, но голосов там не бывает
+    if message is None or message.chat.type != "private":
+        answer_tap(query, TEXT_POLL_PREVIEW_TAP)
+        return
+    user = query.from_user
+    if (poll_id, user.id) in _voted:
+        answer_tap(query, TEXT_POLL_ALREADY)
+        return
+    labels = poll_labels(message.reply_markup)
+    if not 0 <= index < len(labels):
+        answer_tap(query)
+        return
+    # «Часики» гасим сразу: запись в закреп может ждать Телеграм дольше,
+    # чем кнопка готова крутиться
+    answer_tap(query)
+    seen_alive(user.id)
+
+    result = record_vote(context.bot, poll_id, index, len(labels))
+    if result == VOTE_FAILED:
+        # Голос не записан — кнопки остаются, человек нажмёт ещё раз
+        try:
+            context.bot.send_message(chat_id=user.id, text=TEXT_POLL_FAILED,
+                                     disable_web_page_preview=True)
+        except TelegramError as e:
+            logger.warning("Не удалось ответить на голос в опросе: %s", e)
+        return
+    _voted.add((poll_id, user.id))
+
+    # Кнопки-ответы убираем, ссылки (если были) оставляем: ответ учтён
+    rows = message.reply_markup.inline_keyboard if message.reply_markup else []
+    keep = [[b for b in row if not (b.callback_data or "").startswith("pv:")]
+            for row in rows]
+    keep = [row for row in keep if row]
+    try:
+        query.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup(keep) if keep else None)
+    except TelegramError as e:
+        logger.warning("Не удалось убрать кнопки опроса: %s", e)
+
+    answer = labels[index]
+    common = dict(question=html.escape(poll_question(message) or "Опрос"),
+                  user=user_link(user), username=user_handle(user),
+                  answer=html.escape(answer))
+    if result == VOTE_UNKNOWN:
+        notify_group(context.bot,
+                     TEXT_GROUP_POLL_ANSWER_NO_COUNT.format(**common))
+    else:
+        tally = " · ".join(f"{html.escape(label)} — {n}"
+                           for label, n in zip(labels, result))
+        notify_group(context.bot,
+                     TEXT_GROUP_POLL_ANSWER.format(tally=tally, **common))
+    try:
+        context.bot.send_message(
+            chat_id=user.id, parse_mode='HTML', disable_web_page_preview=True,
+            text=TEXT_POLL_THANKS.format(answer=html.escape(answer)))
+    except TelegramError as e:
+        logger.warning("Не удалось поблагодарить за ответ: %s", e)
 
 
 def register_callback(update: Update, context: CallbackContext) -> None:
@@ -2434,12 +2711,41 @@ def questions(update: Update, context: CallbackContext) -> None:
                               disable_web_page_preview=True)
 
 
+TELEGRAM_TEXT_LIMIT = 4096    # столько знаков в одном сообщении, не больше
+
+
+def telegram_chunks(text: str, limit: int = TELEGRAM_TEXT_LIMIT):
+    """Длинный текст — несколькими сообщениями: по абзацам, теги не рвутся.
+
+    Линия «———» — всегда граница сообщения. Длину считаем так же, как
+    Телеграм: видимый текст, без тегов, эмодзи за два знака.
+    """
+    def visible(t):
+        return utf16_len(html.unescape(_HTML_TAG.sub("", t)))
+    chunks = []
+    for section in text.split("\n\n———\n\n"):
+        current = ""
+        for para in section.split("\n\n"):
+            candidate = f"{current}\n\n{para}" if current else para
+            if current and visible(candidate) > limit:
+                chunks.append(current)
+                current = para
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+    return chunks
+
+
 def help_command(update: Update, context: CallbackContext) -> None:
     # В рабочей группе /help показывает инструкцию по служебным командам,
     # в личке — обычную помощь для участников вебинаров.
     if is_admin_chat(update):
-        update.message.reply_text(TEXT_ADMIN_HELP, parse_mode='HTML',
-                                  disable_web_page_preview=True)
+        # Инструкция давно длиннее одного сообщения Телеграма (4096 знаков):
+        # одним куском он бы её просто не принял, и /help промолчал бы
+        for chunk in telegram_chunks(TEXT_ADMIN_HELP):
+            update.message.reply_text(chunk, parse_mode='HTML',
+                                      disable_web_page_preview=True)
         return
     if update.effective_chat.type != "private":
         return
@@ -2622,6 +2928,8 @@ _ALL_SESSIONS = ("все", "всё")
 # её целиком, поэтому с обычным текстом не путается. Такая же запись внутри
 # строки — это просто ссылка в слове, её делает link_markdown().
 _BUTTON_LINE = re.compile(r"^\[([^\]\n]+)\]\((\S+)\)\s*$")
+# Строка-ответ опроса: [Да] — только скобки, без ссылки после них
+_ANSWER_LINE = re.compile(r"^\[([^\]\n]+)\]\s*$")
 _INLINE_LINK = re.compile(
     r"\[([^\]\n]+)\]\(((?:https?|tg)://[^\s()<>]+)\)")
 
@@ -2672,33 +2980,71 @@ def split_buttons(body: str):
     виду: в ссылках платёжных систем часто есть «&», а в HTML он записан
     как «&amp;».
     """
-    kept, buttons = [], []
-    for line in body.split("\n"):
+    lines, found = body.split("\n"), []     # found: (номер строки, надпись, ссылка)
+    for n, line in enumerate(lines):
         match = _BUTTON_LINE.match(line.strip())
         ready = None if match else link_only_line(line.strip())
-        if not match and not ready:
-            kept.append(line)
+        if match or ready:
+            label, url = ready or (plain_label(match.group(1)),
+                                   html.unescape(match.group(2)))
+            if not url.startswith(("https://", "http://", "tg://")):
+                return body, [], TEXT_BROADCAST_BUTTON_BAD.format(
+                    line=html.escape(line.strip()))
+            found.append((n, label, url))
             continue
-        label, url = ready or (plain_label(match.group(1)),
-                               html.unescape(match.group(2)))
-        if not url.startswith(("https://", "http://", "tg://")):
-            return body, [], TEXT_BROADCAST_BUTTON_BAD.format(
-                line=html.escape(line.strip()))
+        answer = _ANSWER_LINE.match(line.strip())
+        if answer and plain_label(answer.group(1)):
+            found.append((n, plain_label(answer.group(1)), None))
+    # Опрос — это хотя бы два варианта; одна строка в скобках («[Важно]»)
+    # остаётся обычным текстом
+    if sum(1 for _, _, url in found if url is None) < 2:
+        found = [f for f in found if f[2] is not None]
+    # Варианты одного вопроса идут подряд. Текст между ними — значит, вопросов
+    # два, а счёт был бы один на всех: отказываем
+    answer_rows = [n for n, _, url in found if url is None]
+    if answer_rows:
+        taken_rows = {n for n, _, _ in found}
+        between = [line for n, line in enumerate(lines)
+                   if answer_rows[0] < n < answer_rows[-1]
+                   and n not in taken_rows and line.strip()]
+        if between:
+            return body, [], TEXT_BROADCAST_TWO_POLLS
+    for _, label, _ in found:
         if len(label) > BUTTON_LABEL_MAX:
             return body, [], TEXT_BROADCAST_BUTTON_LONG.format(
                 max=BUTTON_LABEL_MAX, label=html.escape(label))
-        buttons.append((label, url))
-    if len(buttons) > BUTTON_MAX:
+    if len(found) > BUTTON_MAX:
         return body, [], TEXT_BROADCAST_BUTTON_MANY.format(max=BUTTON_MAX)
-    return "\n".join(kept).strip(), buttons, None
+    taken = {n for n, _, _ in found}
+    kept = [line for n, line in enumerate(lines) if n not in taken]
+    return "\n".join(kept).strip(), [(label, url) for _, label, url in found], None
 
 
-def buttons_markup(buttons):
-    """Кнопки в столбик: по одной в ряд — длинные надписи так читаются."""
+def buttons_markup(buttons, poll_id=None):
+    """Кнопки: ссылки — по одной в ряд, ответы опроса — в одну строку.
+
+    У кнопки-ответа вместо ссылки None. В её данные кладём номер опроса и
+    номер варианта: всё остальное (сам вопрос, надписи) бот при нажатии
+    берёт из того сообщения, на котором нажали, — так ответ переживает и
+    перезапуск, и сон сервиса.
+    """
     if not buttons:
         return None
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(label, url=url)] for label, url in buttons])
+    rows, answers = [], []
+    for label, url in buttons:
+        if url:
+            rows.append([InlineKeyboardButton(label, url=url)])
+            continue
+        button = InlineKeyboardButton(
+            label, callback_data=f"pv:{poll_id}:{len(answers)}")
+        if not answers:
+            rows.append(answers)          # ряд ответов — там, где первый ответ
+        answers.append(button)
+    # Короткие ответы рядом, как в опросе; длинные — каждый своей строкой
+    if answers and sum(len(b.text) for b in answers) > 30:
+        at = next(i for i, row in enumerate(rows) if row is answers)
+        rows[at:at + 1] = [[b] for b in answers]
+    return InlineKeyboardMarkup(rows)
 
 
 def utf16_len(text: str) -> int:
@@ -3122,9 +3468,13 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
                                   disable_web_page_preview=True)
         return
 
+    # Есть варианты ответа — это опрос: у него свой номер, по нему и счёт
+    poll_id = (secrets.token_hex(4) if any(url is None for _, url in buttons)
+               else None)
+
     # Ничего не шлём сразу: сначала показываем, что уйдёт, и спрашиваем
     preview_broadcast(update, context, body, media, keys, label,
-                      len(recipients), buttons)
+                      len(recipients), buttons, poll_id)
 
 
 # Рассылки, которые показали, но ещё не отправили: id -> что и кому.
@@ -3134,14 +3484,15 @@ _pending_broadcast = {}
 
 
 def preview_broadcast(update, context, text, media, keys, label,
-                      count, buttons=None) -> None:
+                      count, buttons=None, poll_id=None) -> None:
     """Выкладывает в группу ровно то, что уйдёт людям, и кнопки «Отправить/Отмена».
 
     Шлёт так же, как broadcast() — те же send_media() и caption_for(). Это и
     проверка: если здесь не вышло, людям тоже не выйдет, и спрашивать не о чем.
     """
     bot = context.bot
-    caption, media_markup, text_markup = delivery_plan(media, text, buttons)
+    caption, media_markup, text_markup = delivery_plan(media, text, buttons,
+                                                       poll_id)
     try:
         if media:
             shown = send_media(bot, ADMIN_CHAT_ID, media, caption, media_markup)
@@ -3160,7 +3511,8 @@ def preview_broadcast(update, context, text, media, keys, label,
         return
     pid = secrets.token_hex(4)
     _pending_broadcast[pid] = {"text": text, "media": media, "keys": keys,
-                               "label": label, "buttons": buttons}
+                               "label": label, "buttons": buttons,
+                               "poll_id": poll_id}
     keyboard = [[
         InlineKeyboardButton(TEXT_BROADCAST_BTN_YES, callback_data=f"bc:y:{pid}"),
         InlineKeyboardButton(TEXT_BROADCAST_BTN_NO, callback_data=f"bc:n:{pid}"),
@@ -3211,9 +3563,14 @@ def broadcast_callback(update: Update, context: CallbackContext) -> None:
         recipients = reachable(recipients)
     _edit_question(query, TEXT_BROADCAST_SENDING.format(
         label=job["label"], count=len(recipients)))
+    if job.get("poll_id"):
+        # Счёт с нулями — до первого ответа, чтобы ни один не потерялся
+        start_poll(context.bot, job["poll_id"],
+                   sum(1 for _, url in job["buttons"] if url is None))
     sent, failed, _ = broadcast(context.bot, job["text"], recipients,
                                 media=job["media"],
-                                buttons=job.get("buttons"))
+                                buttons=job.get("buttons"),
+                                poll_id=job.get("poll_id"))
     notify_group(context.bot, TEXT_BROADCAST_DONE.format(sent=sent,
                                                          failed=failed))
 
@@ -3304,6 +3661,7 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler('dm', dm_command))
     dispatcher.add_handler(CommandHandler('who', who_command))
     dispatcher.add_handler(CallbackQueryHandler(register_callback, pattern=r'^reg:'))
+    dispatcher.add_handler(CallbackQueryHandler(poll_callback, pattern=r'^pv:'))
     # «vn:» — так назывались кнопки, когда рассылать можно было только кружок.
     # Старые кнопки остались в группе и должны честно сказать «не действует».
     dispatcher.add_handler(
