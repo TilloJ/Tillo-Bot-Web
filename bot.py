@@ -231,6 +231,14 @@ TEXT_NO_WEBINARS = (
 TEXT_COURSES_TITLE = "<b>Курсы и вебинары Tillo</b>"
 TEXT_COURSES_UPCOMING = "<b>Ближайшие</b>"
 TEXT_COURSES_PAST = "<b>Уже прошли</b>"
+# Заголовок раздела в /courses над кнопками из блока «КНОПКИ В МЕНЮ»
+TEXT_COURSES_OTHER = "<b>Ещё у нас есть</b>"
+# Нажали кнопку раздела, которого уже нет: его убрали из INFO_PAGES, а кнопка
+# осталась в старом сообщении
+TEXT_INFO_GONE = (
+    "Этого раздела больше нет. Загляните в меню бота — там всё, что есть "
+    "сейчас."
+)
 
 # --- /link: ссылка на свой вебинар по запросу ------------------------------
 # Ссылку получает только тот, кто записан именно на этот сеанс.
@@ -368,9 +376,17 @@ INFO_PAGES = [
      "text": lambda: TEXT_DIARY, "buttons": lambda: BUTTONS_DIARY},
 ]
 
+# Человек просто написал боту. Главное — сказать прямо, что так сообщение
+# до нас НЕ дойдёт, и показать, как написать по-настоящему: раньше тут было
+# только «нажмите Меню», и люди писали в пустоту, думая, что их читают.
 TEXT_UNKNOWN = (
-    "Нажмите кнопку <b>Меню</b> слева от поля ввода, чтобы выбрать действие."
+    "Это сообщение никто не прочитает — я бот и отвечаю только на команды 🙂\n\n"
+    "Чтобы написать команде Tillo, нажмите кнопку <b>Задать вопрос</b> ниже "
+    "(или выберите /questions в меню) — и тогда следующее ваше сообщение "
+    "дойдёт до нас."
 )
+# Надпись на кнопке под этим сообщением
+TEXT_UNKNOWN_BUTTON = "✍️ Задать вопрос"
 
 # ============================================================================
 # ТЕКСТЫ НАПОМИНАНИЙ — у каждого напоминания свой текст, все они здесь.
@@ -1067,6 +1083,9 @@ def courses_text() -> str:
         lines.append("")
     if not upcoming and not past:
         lines.append(TEXT_NO_WEBINARS)
+    if INFO_PAGES:
+        lines.append(TEXT_COURSES_OTHER)
+        lines.extend(f"• {page['menu']}" for page in INFO_PAGES)
     return "\n".join(lines).strip()
 
 
@@ -2578,19 +2597,26 @@ def button_label(w) -> str:
 def register(update: Update, context: CallbackContext) -> None:
     context.user_data['state'] = None
     upcoming = upcoming_webinars()
+    # Разделы показываем и когда вебинаров нет: иначе предложение курса
+    # пропадает ровно тогда, когда расписание пустое
+    extra = info_buttons()
     if not upcoming:
-        update.message.reply_text(TEXT_NO_WEBINARS, parse_mode='HTML',
-                                  disable_web_page_preview=True)
+        update.message.reply_text(
+            TEXT_NO_WEBINARS, parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(extra) if extra else None,
+            disable_web_page_preview=True)
         return
 
     keyboard = [
         [InlineKeyboardButton(button_label(w), callback_data=f"reg:{webinar_key(w)}")]
         for w in upcoming
     ]
+    # Кнопки разделов — отдельными рядами снизу: они ни на что не записывают,
+    # и по виду (без даты и времени) это сразу заметно
     update.message.reply_text(
         TEXT_REGISTER_PICK,
         parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=InlineKeyboardMarkup(keyboard + extra),
         disable_web_page_preview=True,
     )
 
@@ -2644,16 +2670,28 @@ def poll_labels(markup):
     return [labels.get(i, "?") for i in range(max(labels) + 1)] if labels else []
 
 
+POLL_QUESTION_MAX = 80     # длиннее в группу не пишем — это только подпись
+
+
 def poll_question(message) -> str:
     """Сам вопрос — по нему в группе видно, на какой опрос ответ.
 
-    Берём последнюю строку текста: вопрос обычно стоит прямо перед
-    вариантами, а первой строкой часто бывает «Привет!».
+    Берём последнюю строку текста (вопрос стоит прямо перед вариантами), а
+    из неё — последнее предложение: приветствие и вопрос часто пишут одной
+    строкой, и тогда в подпись попадало «Привет, были на нашем вебинаре с
+    нутрициологом…», а сам вопрос обрезался. Если и предложение длинное,
+    оставляем его конец: вопрос — в конце.
     """
     text = (message.text or message.caption or "").strip()
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     last = lines[-1] if lines else ""
-    return last if len(last) <= 80 else last[:79] + "…"
+    parts = [p for p in re.split(r"(?<=[.!?…])\s+", last) if p.strip()]
+    question = parts[-1].strip() if parts else last
+    if len(question) > POLL_QUESTION_MAX:
+        tail = question[-(POLL_QUESTION_MAX - 1):]
+        # не начинаем с обрубка слова
+        question = "…" + (tail.split(" ", 1)[-1] if " " in tail else tail)
+    return question
 
 
 def poll_callback(update: Update, context: CallbackContext) -> None:
@@ -2863,29 +2901,91 @@ def help_command(update: Update, context: CallbackContext) -> None:
 
 
 def courses(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text(courses_text(), parse_mode='HTML',
-                              disable_web_page_preview=True)
+    extra = info_buttons()
+    update.message.reply_text(
+        courses_text(), parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(extra) if extra else None,
+        disable_web_page_preview=True)
 
 
-def info_page_handler(page):
-    """Кнопка меню с готовым текстом: /kurs, /dnevnik и те, что добавят потом.
+def find_info_page(command: str):
+    return next((p for p in INFO_PAGES if p["command"] == command), None)
+
+
+def info_buttons():
+    """Кнопки разделов — по одной в ряд, одинаковые в /register и /courses."""
+    return [[InlineKeyboardButton(page["menu"],
+                                  callback_data=f"info:{page['command']}")]
+            for page in INFO_PAGES]
+
+
+def send_info_page(message, page) -> None:
+    """Отправляет раздел в ответ на сообщение: текст и кнопки под ним.
 
     Текст берём в момент нажатия, а не при старте: так достаточно поправить
     TEXT_… наверху файла. Длинный текст Телеграм одним сообщением не примет,
     поэтому делим по абзацам; кнопки — под последним куском, где им место.
     """
+    chunks = telegram_chunks(page["text"]()) or [""]
+    markup = buttons_markup(page["buttons"]())
+    for n, chunk in enumerate(chunks):
+        message.reply_text(
+            chunk, parse_mode='HTML', disable_web_page_preview=True,
+            reply_markup=markup if n == len(chunks) - 1 else None)
+
+
+def info_page_handler(page):
+    """Команда раздела: /kurs, /dnevnik и те, что добавят потом."""
     def handler(update: Update, context: CallbackContext) -> None:
         if update.effective_chat.type != "private" and not is_admin_chat(update):
             return
         if update.effective_user:
             seen_alive(update.effective_user.id)
-        chunks = telegram_chunks(page["text"]()) or [""]
-        markup = buttons_markup(page["buttons"]())
-        for n, chunk in enumerate(chunks):
-            update.message.reply_text(
-                chunk, parse_mode='HTML', disable_web_page_preview=True,
-                reply_markup=markup if n == len(chunks) - 1 else None)
+        send_info_page(update.message, page)
     return handler
+
+
+def ask_callback(update: Update, context: CallbackContext) -> None:
+    """Кнопка «Задать вопрос» под ответом бота на обычное сообщение.
+
+    Делает ровно то же, что /questions: со следующего сообщения вопрос
+    уходит в группу.
+    """
+    query = update.callback_query
+    answer_tap(query)
+    if query.message is None or query.message.chat.type != "private":
+        return
+    seen_alive(query.from_user.id)
+    context.user_data['state'] = 'QUESTIONS'
+    try:
+        query.message.reply_text(TEXT_QUESTIONS, parse_mode='HTML',
+                                 disable_web_page_preview=True)
+    except TelegramError as e:
+        logger.warning("Не удалось ответить на кнопку вопроса: %s", e)
+
+
+def info_callback(update: Update, context: CallbackContext) -> None:
+    """Нажатие на кнопку раздела под /register или /courses."""
+    query = update.callback_query
+    answer_tap(query)
+    message = query.message
+    if message is None or (message.chat.type != "private"
+                           and not (ADMIN_CHAT_ID
+                                    and message.chat.id == ADMIN_CHAT_ID)):
+        return
+    page = find_info_page((query.data or "").split(":", 1)[-1])
+    if page is None:
+        # Раздел убрали из INFO_PAGES, а кнопка осталась в старом сообщении.
+        # Отвечаем новым сообщением, а не правкой: кнопка живёт под списком
+        # вебинаров, и правка стёрла бы человеку сам список.
+        try:
+            message.reply_text(TEXT_INFO_GONE, parse_mode='HTML',
+                               disable_web_page_preview=True)
+        except TelegramError as e:
+            logger.warning("Не удалось ответить на кнопку раздела: %s", e)
+        return
+    seen_alive(query.from_user.id)
+    send_info_page(message, page)
 
 
 def handle_message(update: Update, context: CallbackContext) -> None:
@@ -2909,8 +3009,11 @@ def handle_message(update: Update, context: CallbackContext) -> None:
         context.user_data['state'] = None
 
     else:
-        update.message.reply_text(TEXT_UNKNOWN, parse_mode='HTML',
-                                  disable_web_page_preview=True)
+        update.message.reply_text(
+            TEXT_UNKNOWN, parse_mode='HTML', disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton(TEXT_UNKNOWN_BUTTON,
+                                       callback_data="ask:")]]))
 
 
 # ============================================================================
@@ -3795,6 +3898,8 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler('who', who_command))
     dispatcher.add_handler(CallbackQueryHandler(register_callback, pattern=r'^reg:'))
     dispatcher.add_handler(CallbackQueryHandler(poll_callback, pattern=r'^pv:'))
+    dispatcher.add_handler(CallbackQueryHandler(info_callback, pattern=r'^info:'))
+    dispatcher.add_handler(CallbackQueryHandler(ask_callback, pattern=r'^ask:'))
     # «vn:» — так назывались кнопки, когда рассылать можно было только кружок.
     # Старые кнопки остались в группе и должны честно сказать «не действует».
     dispatcher.add_handler(
