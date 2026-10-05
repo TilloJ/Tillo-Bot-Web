@@ -55,6 +55,10 @@ ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "0"))
 # вебинара — у каждого свой список записавшихся, своё напоминание и своя
 # ссылка на зум. Время в название писать НЕ нужно, бот показывает его сам.
 #
+# "about" — подробности, которые придут человеку сразу после записи, вторым
+# сообщением: люди быстро забывают, на что записались. Можно оставить "" —
+# тогда второе сообщение не уйдёт. Переносы строк — \n, жирный — <b>так</b>.
+#
 # "zoom" — ссылка именно на этот сеанс. Она попадёт в напоминание вместо
 # {zoom}. У утреннего и вечернего сеанса ссылки РАЗНЫЕ, поэтому каждая
 # лежит рядом со своим вебинаром. Пока не заполнили — оставьте "".
@@ -62,6 +66,7 @@ WEBINARS = [
     {
         "date": "30.09.2026",
         "time": "11:00",
+        "about": "",
         "zoom": "https://us06web.zoom.us/j/81486969386?pwd=igtP2cbp8VhdlVhTQIqIPVqM9SDtlP.1",
         "title": "Черепанова Екатерина: 5 ошибок, из-за которых здоровое "
                  "питание не становится образом жизни",
@@ -69,6 +74,7 @@ WEBINARS = [
     {
         "date": "30.09.2026",
         "time": "19:00",
+        "about": "",
         "zoom": "https://us06web.zoom.us/j/85930513192?pwd=8lPNVRjhsKVL0KpRty1Y1rTI53zaDl.1",
         "title": "Черепанова Екатерина: 5 ошибок, из-за которых здоровое "
                  "питание не становится образом жизни",
@@ -76,13 +82,15 @@ WEBINARS = [
     {
         "date": "19.10.2026",
         "time": "11:00",
+        "about": "",
         "zoom": "",
         "title": "Галеева Ирина: Упадок сил, выгорание или гормональный сбой? "
                  "Как понять, что происходит с организмом",
     },
     {
         "date": "19.10.2026",
-        "time": "19:00",
+        "time": "18:00",
+        "about": "",
         "zoom": "",
         "title": "Галеева Ирина: Упадок сил, выгорание или гормональный сбой? "
                  "Как понять, что происходит с организмом",
@@ -90,6 +98,7 @@ WEBINARS = [
     {
         "date": "30.10.2026",
         "time": "11:00",
+        "about": "",
         "zoom": "",
         "title": "Крумкач Ольга: Гормоны и энергия или женское здоровье "
                  "без мифов",
@@ -97,6 +106,7 @@ WEBINARS = [
     {
         "date": "30.10.2026",
         "time": "19:00",
+        "about": "",
         "zoom": "",
         "title": "Крумкач Ольга: Гормоны и энергия или женское здоровье "
                  "без мифов",
@@ -212,6 +222,21 @@ TEXT_REGISTER_DONE_SOON = (
     "Вебинар уже совсем скоро — ссылку пришлю следующим сообщением."
 )
 
+# Второе сообщение сразу после записи — подробности о вебинаре.
+# {date}, {time}, {title} и {about} подставляются автоматически; {about} —
+# это поле "about" вебинара из списка выше.
+TEXT_REGISTER_DETAILS = (
+    "📌 <b>{date}, {time} по московскому времени</b>\n"
+    "{title}\n\n"
+    "{about}"
+)
+# Хвост этого сообщения — одинаковый для всех вебинаров
+TEXT_REGISTER_DETAILS_TAIL = (
+    "Напомню заранее — за несколько дней и ещё раз перед самым началом. "
+    "Ссылка на вход придёт в напоминании, а посмотреть её можно в любой "
+    "момент командой /link."
+)
+
 TEXT_REGISTER_ALREADY = "Вы уже записаны на этот вебинар 🙂"
 
 TEXT_REGISTER_GONE = (
@@ -268,6 +293,19 @@ TEXT_HELP = (
     "Если что-то непонятно или появились вопросы про вебинар — "
     "пишите мне в личные сообщения @AppolaAppola"
 )
+
+# ----------------------------------------------------------------------------
+# ПЕРЕНОС ЗАПИСЕЙ, ЕСЛИ У ВЕБИНАРА ПОМЕНЯЛИ ВРЕМЯ
+# Записи хранятся по дате И времени. Поменяли время в списке выше — те, кто
+# уже записался, остались под старым временем, и напоминание до них не дойдёт:
+# бот будет искать их по новому. Впишите сюда старое и новое время — бот
+# перенесёт записи сам, при первом же чтении списка.
+# Формат: "ДД.ММ.ГГГГ-ЧЧММ": "ДД.ММ.ГГГГ-ЧЧММ" (время без двоеточия).
+# ----------------------------------------------------------------------------
+KEY_MOVES = {
+    # 05.10.2026: вебинар Галеевой 19.10 сдвинули с 19:00 на 18:00 по Москве
+    "19.10.2026-1900": "19.10.2026-1800",
+}
 
 # ============================================================================
 # КНОПКИ В МЕНЮ С ГОТОВЫМ ТЕКСТОМ
@@ -500,16 +538,19 @@ TEXT_GROUP_REGISTRATION = (
 # это и есть вопрос), {user} —
 # имя (нажимается), {username} — @ник, {answer} — что выбрал, {tally} — счёт.
 TEXT_GROUP_POLL_ANSWER = (
-    "📊 {question}\n"
+    "📊 {question}{target}\n"
     "{user} ({username}): <b>{answer}</b>\n"
     "Счёт: {tally}"
 )
 # То же, но для старого опроса, счёт которого бот уже не хранит
 TEXT_GROUP_POLL_ANSWER_NO_COUNT = (
-    "📊 {question}\n"
+    "📊 {question}{target}\n"
     "{user} ({username}): <b>{answer}</b>\n"
     "<i>(опрос старый — счёт по нему бот уже не ведёт)</i>"
 )
+# Кому рассылали опрос — подставляется в {target} выше. Нужно, когда опросов
+# идёт несколько: с одинаковым вопросом их иначе не различить.
+TEXT_GROUP_POLL_TARGET = " <i>({target})</i>"
 # Человеку — после того как его ответ записан. {answer} — что он выбрал.
 TEXT_POLL_THANKS = "Спасибо! Ваш ответ: <b>{answer}</b> 🙂"
 # Если ответ записать не удалось — кнопки остаются, человек нажмёт ещё раз
@@ -1282,6 +1323,10 @@ DELETE_OLD_REGISTRY_FILES = True
 # раз засыпает: счёт только в памяти обнулялся бы и врал. Помним последние
 # POLL_KEEP опросов (настройка наверху файла), чтобы закреп не рос.
 poll_counts = {}
+# Кому опрос отправляли: номер опроса -> «30.09.2026 в 11:00», «30.09.2026,
+# все сеансы», «всем записавшимся». Хранится там же, в закрепе, — иначе после
+# перезапуска два опроса с одинаковым вопросом не различить.
+poll_targets = {}
 # Закреп ровно в том виде, в каком его последний раз прочли или записали.
 # Голос в опросе переписывает в нём только строки POLL — всё остальное
 # («Всего», отметки, указатель на файл) остаётся этим текстом.
@@ -1322,7 +1367,11 @@ def migrate_key(key: str) -> str:
     ещё не было, и определить какой именно он выбрал неоткуда. Такие записи
     здесь остаются как есть — на все сеансы дня их при запуске записывает
     adopt_unassigned().
+
+    Сначала смотрим KEY_MOVES: если у вебинара поменяли время, запись должна
+    переехать на новое, иначе напоминание её не найдёт.
     """
+    key = KEY_MOVES.get(key, key)
     if not _DATE_ONLY.match(key):
         return key
     same_day = webinars_on(key)
@@ -1739,11 +1788,11 @@ def load_registry(bot) -> bool:
         blocked.update(blk)
     reminded_keys.update(sent)
     # Счета опросов: из закрепа, но то, что память уже насчитала, не теряем
-    for pid, counts in parse_polls(pinned.text).items():
+    for pid, (counts, target) in parse_polls(pinned.text).items():
         mine = poll_counts.get(pid, [])
         merged = [max(a, b) for a, b in itertools.zip_longest(
             counts, mine, fillvalue=0)]
-        _keep_poll(pid, merged)
+        _keep_poll(pid, merged, poll_targets.get(pid) or target)
     last_pin_text = pinned.text
     _read_failures = 0
 
@@ -1778,28 +1827,39 @@ def pin_text(snap) -> str:
 # Строка счёта опроса в закрепе. Номер — 8 шестнадцатеричных знаков, поэтому
 # со строкой списка («30.09.2026:…») её не спутать — ни этой версии, ни
 # старым: они все пропускают строки, которых не знают.
-_POLL_LINE = re.compile(r"^POLL:([0-9a-f]{8}):(\d+(?:,\d+)*)$")
+# «POLL:номер:12,3:кому» — «кому» дописано 05.10 и может отсутствовать у
+# опросов, начатых раньше.
+_POLL_LINE = re.compile(r"^POLL:([0-9a-f]{8}):(\d+(?:,\d+)*)(?::(.*))?$")
 
 
 def poll_lines():
-    return [f"POLL:{pid}:{','.join(str(n) for n in counts)}"
-            for pid, counts in poll_counts.items()]
+    lines = []
+    for pid, counts in poll_counts.items():
+        line = f"POLL:{pid}:{','.join(str(n) for n in counts)}"
+        target = (poll_targets.get(pid) or "").replace("\n", " ").strip()
+        lines.append(f"{line}:{target}" if target else line)
+    return lines
 
 
 def parse_polls(text: str):
-    """Счета опросов из закреплённого сообщения: {номер: [12, 3]}."""
+    """Опросы из закреплённого сообщения: {номер: ([12, 3], «кому»)}."""
     polls = {}
     for line in (text or "").split("\n"):
         match = _POLL_LINE.match(line.strip())
         if match:
-            polls[match.group(1)] = [int(n) for n in match.group(2).split(",")]
+            polls[match.group(1)] = ([int(n) for n in match.group(2).split(",")],
+                                     (match.group(3) or "").strip())
     return polls
 
 
-def _keep_poll(poll_id, counts) -> None:
+def _keep_poll(poll_id, counts, target=None) -> None:
     poll_counts[poll_id] = counts
+    if target:
+        poll_targets[poll_id] = target
     while len(poll_counts) > POLL_KEEP:
-        poll_counts.pop(next(iter(poll_counts)))
+        oldest = next(iter(poll_counts))
+        poll_counts.pop(oldest)
+        poll_targets.pop(oldest, None)
 
 
 def _write_poll_lines(bot) -> bool:
@@ -1833,7 +1893,7 @@ def _write_poll_lines(bot) -> bool:
     return True
 
 
-def start_poll(bot, poll_id: str, options: int) -> None:
+def start_poll(bot, poll_id: str, options: int, target: str = "") -> None:
     """Заводит счёт опроса с нулями — сразу, как только рассылку отправили.
 
     Тогда «опроса нет в закрепе» значит одно: он старый и вытеснен. Ответ на
@@ -1841,7 +1901,7 @@ def start_poll(bot, poll_id: str, options: int) -> None:
     """
     with _save_lock:
         if poll_id not in poll_counts:
-            _keep_poll(poll_id, [0] * options)
+            _keep_poll(poll_id, [0] * options, target)
         if not _write_poll_lines(bot):
             # не беда: счёт есть в памяти и запишется с первым же голосом
             logger.warning("Счёт опроса %s пока не записан в закреп", poll_id)
@@ -2749,9 +2809,14 @@ def poll_callback(update: Update, context: CallbackContext) -> None:
         logger.warning("Не удалось убрать кнопки опроса: %s", e)
 
     answer = labels[index]
+    target = poll_targets.get(poll_id, "")
     common = dict(question=html.escape(poll_question(message) or "Опрос"),
                   user=user_link(user), username=user_handle(user),
-                  answer=html.escape(answer))
+                  answer=html.escape(answer),
+                  # Кому слали: без этого два опроса с одним вопросом
+                  # (утро и вечер) в группе не различить
+                  target=(TEXT_GROUP_POLL_TARGET.format(target=html.escape(target))
+                          if target else ""))
     if result == VOTE_UNKNOWN:
         notify_group(context.bot,
                      TEXT_GROUP_POLL_ANSWER_NO_COUNT.format(**common))
@@ -2818,6 +2883,21 @@ def register_callback(update: Update, context: CallbackContext) -> None:
         else:
             logger.error("Не удалось сразу отправить ссылку на %s кому-то, "
                          "кто записался после всех напоминаний", key)
+
+    # Подробности последним сообщением: «люди забывают очень быстро, на
+    # что они записались». Именно последним — подтверждение обещает, что
+    # СЛЕДУЮЩИМ придёт ссылка, и это обещание важнее
+    details = "\n\n".join(
+        part for part in (TEXT_REGISTER_DETAILS.format(
+            date=w["date"], time=w["time"], title=clean_title(w),
+            about=(w.get("about") or "").strip()).strip(),
+            TEXT_REGISTER_DETAILS_TAIL) if part)
+    try:
+        context.bot.send_message(chat_id=user.id, text=details,
+                                 parse_mode='HTML',
+                                 disable_web_page_preview=True)
+    except TelegramError as e:
+        logger.warning("Не удалось отправить подробности о вебинаре: %s", e)
 
 
 def link_command(update: Update, context: CallbackContext) -> None:
@@ -3799,7 +3879,8 @@ def broadcast_callback(update: Update, context: CallbackContext) -> None:
     if job.get("poll_id"):
         # Счёт с нулями — до первого ответа, чтобы ни один не потерялся
         start_poll(context.bot, job["poll_id"],
-                   sum(1 for _, url in job["buttons"] if url is None))
+                   sum(1 for _, url in job["buttons"] if url is None),
+                   job.get("label", ""))
     sent, failed, _ = broadcast(context.bot, job["text"], recipients,
                                 media=job["media"],
                                 buttons=job.get("buttons"),
