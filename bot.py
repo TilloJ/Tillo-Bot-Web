@@ -230,7 +230,7 @@ TEXT_START = (
     "Привет! Это бот Tillo Медиа.\n\n"
     "Нажмите кнопку <b>Меню</b> слева от поля ввода — там все действия:\n\n"
     "/register — регистрация на вебинар\n"
-    "/link — ссылка на ваш вебинар\n"
+    "/my — мои вебинары: ссылки и отмена записи\n"
     "/questions — задать вопрос спикеру\n"
     "/courses — все курсы и вебинары\n"
     "/kurs — курс «Полезные привычки 2.0»\n"
@@ -268,7 +268,7 @@ TEXT_REGISTER_DETAILS = (
 TEXT_REGISTER_DETAILS_TAIL = (
     "Напомню заранее — за несколько дней и ещё раз перед самым началом. "
     "Ссылка на вход придёт в напоминании, а посмотреть её можно в любой "
-    "момент командой /link."
+    "момент командой /my."
 )
 
 TEXT_REGISTER_ALREADY = "Вы уже записаны на этот вебинар 🙂"
@@ -299,13 +299,36 @@ TEXT_INFO_GONE = (
     "сейчас."
 )
 
-# --- /link: ссылка на свой вебинар по запросу ------------------------------
+# --- /my: мои записи — ссылка на вход и отмена записи ----------------------
 # Ссылку получает только тот, кто записан именно на этот сеанс.
 TEXT_LINK_NONE = (
     "Вы пока не записаны ни на один вебинар. Нажмите /register — покажу, "
     "что будет в ближайшее время."
 )
 TEXT_LINK_HEADER = "Ваши вебинары и ссылки на них:"
+# Подпись под каждым вебинаром в /my — кнопка отмены записи
+TEXT_MY_CANCEL_BUTTON = "Отменить запись: {date} в {time}"
+# Спрашиваем ещё раз: отменить запись одним случайным нажатием — плохо
+TEXT_MY_CANCEL_ASK = (
+    "Отменить запись на <b>{date} в {time}</b>?\n{title}\n\n"
+    "Если передумаете — записаться снова можно в любой момент через "
+    "/register."
+)
+TEXT_MY_CANCEL_YES = "Да, отменить"
+TEXT_MY_CANCEL_NO = "Нет, остаюсь"
+TEXT_MY_CANCEL_DONE = (
+    "Запись на <b>{date} в {time}</b> отменена. Напоминания по нему больше "
+    "не придут.\n\nПередумаете — /register всегда на месте 🙂"
+)
+TEXT_MY_CANCEL_KEPT = "Хорошо, запись остаётся 🙂"
+TEXT_MY_CANCEL_GONE = (
+    "Записи на этот вебинар уже нет — возможно, вы отменили её раньше или "
+    "вебинар уже начался."
+)
+TEXT_MY_CANCEL_FAILED = (
+    "Не получилось отменить запись — попробуйте, пожалуйста, ещё раз чуть "
+    "позже."
+)
 # {date}, {time}, {title}, {zoom} подставляются автоматически
 TEXT_LINK_ITEM = (
     "<b>{date} в {time}</b> (по московскому времени)\n"
@@ -561,6 +584,12 @@ TEXT_WHEN_SOON = "<b>уже совсем скоро</b>"
 # даже если у него нет @username.
 TEXT_GROUP_REGISTRATION = (
     "✅ Регистрация на {date}\n"
+    "{user} ({username})"
+)
+
+# Человек сам отменил запись
+TEXT_GROUP_CANCELLED = (
+    "❌ Отмена записи на {date}\n"
     "{user} ({username})"
 )
 
@@ -980,6 +1009,13 @@ TEXT_STATS_SCHEDULE_SOON = "\nи ещё раз примерно за {minutes} �
 # Последняя строчка /stats
 TEXT_STATS_FOOTER = "<i>Техническая проверка: /health</i>"
 
+# Строчка в /stats про отменённые записи. {count} — сколько их,
+# {mark} — как они помечены в файле.
+TEXT_STATS_CANCELLED = (
+    "Отменили запись: {count}. Эти люди остаются в списке и в общих "
+    "рассылках — в registry.xlsx у них в столбце «статус» стоит «{mark}»."
+)
+
 # Строчка в /stats про тех, кто заблокировал бота. {count} — сколько их,
 # {mark} — как они помечены в файле.
 TEXT_STATS_BLOCKED = (
@@ -1068,6 +1104,10 @@ TEXT_FILE_HEADER = ("id", "вебинар", "имя", "username", "записа�
 # Что стоит в столбце «статус» у тех, кто заблокировал бота. Их НЕ удаляют:
 # они остаются в списке, просто рассылки им больше не уходят.
 TEXT_FILE_BLOCKED = "заблокировал(а) бота"
+# Пометка в столбце «статус» у того, кто сам отменил запись на этот вебинар.
+# Человек остаётся в файле: мы никого не удаляем, просто больше ему по этому
+# вебинару не пишем.
+TEXT_FILE_CANCELLED = "отменил(а) запись"
 # Два листа в файле. Записи на прошедшие вебинары бот сам переносит на лист
 # «Архив» — оттуда ничего не пропадает, это база всех, кто когда-либо
 # записывался. Бот читает оба листа одинаково.
@@ -1342,6 +1382,10 @@ STARTED_AT = now_local()
 # их НЕ убираем — человек остаётся в файле с пометкой и в «Всего», просто
 # рассылки его пропускают. Разблокирует и запишется снова — пометка снимется.
 blocked = set()
+# Кто сам отменил запись: пары (ключ вебинара, id). Из списка их НЕ убираем —
+# строка остаётся в файле с пометкой, «Всего» не падает, общие рассылки им
+# по-прежнему уходят. Пропускаем только по этому вебинару.
+cancelled = set()
 # Сообщение с файлом текущего списка и предыдущего: (message_id, file_id).
 file_pointer = None
 prev_pointer = None
@@ -1521,6 +1565,18 @@ def all_subscribers() -> set:
     return everyone
 
 
+def registered_for(key: str) -> set:
+    """Кто сейчас записан на этот вебинар — без тех, кто отменил запись.
+
+    Один источник для напоминаний, рассылок, /who и счётчиков в /stats:
+    иначе где-нибудь отменившийся остался бы и получил напоминание.
+    """
+    ids = registrations.get(key, set())
+    if not cancelled:
+        return set(ids)
+    return {uid for uid in ids if (key, uid) not in cancelled}
+
+
 def reachable(ids) -> set:
     """Кому из них вообще можно написать: без тех, кто заблокировал бота.
 
@@ -1638,8 +1694,13 @@ def fill_sheet(ws, keys, snap) -> None:
                 cell = ws.cell(row=row, column=5, value=datetime.datetime.strptime(
                     when, "%Y-%m-%d %H:%M"))
                 cell.number_format = "yyyy-mm-dd hh:mm"
+            marks = []
+            if (key, uid) in cancelled:
+                marks.append(TEXT_FILE_CANCELLED)
             if uid in blocked:
-                cell = ws.cell(row=row, column=6, value=TEXT_FILE_BLOCKED)
+                marks.append(TEXT_FILE_BLOCKED)
+            if marks:
+                cell = ws.cell(row=row, column=6, value=", ".join(marks))
                 cell.data_type = "s"
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:F{row}"
@@ -1671,12 +1732,12 @@ def registry_xlsx(snap, today: datetime.date = None) -> bytes:
 
 
 def parse_registry_xlsx(data: bytes):
-    """Разбирает registry.xlsx: (записи, люди, время записи, заблокировавшие).
+    """registry.xlsx: (записи, люди, время записи, заблокировавшие, отменившие).
 
     Непонятная строка — ошибка, а не пропуск: это наш собственный файл, и
     испорченный файл нельзя принять за прочитанный.
     """
-    regs, ppl, times, blk = {}, {}, {}, set()
+    regs, ppl, times, blk, cnc = {}, {}, {}, set(), set()
     wb = load_workbook(io.BytesIO(data), read_only=True)
     try:
         # Читаем ВСЕ листы: и «Записи», и «Архив» — для бота это один список.
@@ -1704,12 +1765,18 @@ def parse_registry_xlsx(data: bytes):
                 times[(key, uid)] = when.strftime("%Y-%m-%d %H:%M")
             elif when:
                 times[(key, uid)] = str(when).strip()
-            # Любая пометка в «статусе» значит одно: человек заблокировал бота
-            if len(row) > 5 and str(row[5] or "").strip():
+            # В «статусе» теперь две разные пометки, поэтому смотрим, какая
+            # именно: «любая пометка = заблокировал» пометила бы отменивших
+            # запись как заблокировавших и отрезала бы их от всех рассылок.
+            status = str(row[5] or "").strip() if len(row) > 5 else ""
+            if TEXT_FILE_CANCELLED in status:
+                cnc.add((key, uid))
+            if TEXT_FILE_BLOCKED in status or (
+                    status and TEXT_FILE_CANCELLED not in status):
                 blk.add(uid)
     finally:
         wb.close()
-    return regs, ppl, times, blk
+    return regs, ppl, times, blk, cnc
 
 
 def prune_past_sent(today: datetime.date = None) -> int:
@@ -1782,13 +1849,13 @@ def load_registry(bot) -> bool:
                      "в нём нет — НИЧЕГО не пишу", total)
         return False
 
-    regs, ppl, times, blk = {}, {}, {}, set()
+    regs, ppl, times, blk, cnc = {}, {}, {}, set(), set()
     if "FILE" in pointers:
         try:
             data = download_registry(bot, pointers["FILE"][1])
             if data[:2] != b"PK":            # xlsx — это zip-архив
                 raise ValueError("файл списка не в формате xlsx")
-            regs, ppl, times, blk = parse_registry_xlsx(data)
+            regs, ppl, times, blk, cnc = parse_registry_xlsx(data)
             count = len(set().union(*regs.values())) if regs else 0
             # «Всего» записано в сообщение тем же сохранением, что и файл.
             # Файл, оборвавшийся на границе строки, разбирается без ошибок,
@@ -1820,6 +1887,7 @@ def load_registry(bot) -> bool:
         for pair, when in times.items():
             signed_at.setdefault(pair, when)
         blocked.update(blk)
+        cancelled.update(cnc)
     reminded_keys.update(sent)
     # Счета опросов: из закрепа, но то, что память уже насчитала, не теряем
     for pid, (counts, target) in parse_polls(pinned.text).items():
@@ -2517,7 +2585,7 @@ def _send_reminders(bot, today: datetime.date = None) -> int:
                         key, days_left)
             continue
 
-        recipients = reachable(registrations.get(key, set()))
+        recipients = reachable(registered_for(key))
         if not recipients:
             # Намеренно НЕ помечаем как отправленное: иначе /stats покажет
             # "напоминание уже отправлено" там, где не ушло ничего, а тот, кто
@@ -2595,7 +2663,7 @@ def _send_start_reminders(bot, now: datetime.datetime = None) -> int:
         if sent_tag(key, "soon") in reminded_keys:
             continue
 
-        recipients = reachable(registrations.get(key, set()))
+        recipients = reachable(registered_for(key))
         if not recipients:
             logger.info("На вебинар %s никто не записался — напоминать некому",
                         key)
@@ -2731,20 +2799,20 @@ def answer_tap(query, text=None) -> None:
         logger.warning("Не удалось ответить на нажатие кнопки: %s", e)
 
 
-def tell_tapper(query, text: str) -> None:
+def tell_tapper(query, text: str, markup=None) -> None:
     """Ответ на нажатие: правим сообщение с кнопками, не вышло — пишем новым.
 
     Ответ теряться не должен: к этому моменту регистрация уже сохранена, и
     человек должен об этом узнать.
     """
     try:
-        query.edit_message_text(text, parse_mode='HTML',
+        query.edit_message_text(text, parse_mode='HTML', reply_markup=markup,
                                 disable_web_page_preview=True)
         return
     except TelegramError as e:
         logger.warning("Не удалось обновить сообщение с кнопками: %s", e)
     try:
-        query.message.reply_text(text, parse_mode='HTML',
+        query.message.reply_text(text, parse_mode='HTML', reply_markup=markup,
                                  disable_web_page_preview=True)
     except (TelegramError, AttributeError) as e:
         logger.error("Не удалось ответить на нажатие кнопки: %s", e)
@@ -2882,7 +2950,7 @@ def register_callback(update: Update, context: CallbackContext) -> None:
         tell_tapper(query, TEXT_REGISTER_GONE)
         return
 
-    already = registrations.get(key, set())
+    already = registered_for(key)
     if user.id in already:
         tell_tapper(query, TEXT_REGISTER_ALREADY)
         return
@@ -2890,6 +2958,7 @@ def register_callback(update: Update, context: CallbackContext) -> None:
     # Сначала записываем и сохраняем, и только потом подтверждаем человеку —
     # иначе можно сказать «готово» там, где на самом деле ничего не сохранилось.
     registrations.setdefault(key, set()).add(user.id)
+    cancelled.discard((key, user.id))   # записался снова — пометка не нужна
     remember_person(user.id, user.full_name, user.username)
     signed_at[(key, user.id)] = now_msk()
     if not save_registry(context.bot):
@@ -2934,10 +3003,19 @@ def register_callback(update: Update, context: CallbackContext) -> None:
         logger.warning("Не удалось отправить подробности о вебинаре: %s", e)
 
 
-def link_command(update: Update, context: CallbackContext) -> None:
-    """/link — прислать ссылку на вебинары, на которые человек записан.
+def my_webinars(user_id: int):
+    """Вебинары этого человека, которые ещё не начались — по порядку."""
+    moment = as_moment()
+    mine = [w for w in WEBINARS
+            if user_id in registered_for(webinar_key(w))
+            and webinar_is_ahead(w, moment)]
+    return sorted(mine, key=lambda x: webinar_start(x) or as_moment())
 
-    Нужна тем, кто записался после всех напоминаний или потерял сообщение.
+
+def my_command(update: Update, context: CallbackContext) -> None:
+    """/my (и /link) — мои записи: ссылка на вход и отмена записи.
+
+    Нужна и тем, кто записался после всех напоминаний или потерял сообщение.
     Чужие ссылки так не узнать: показываем только те сеансы, на которые
     записан именно этот человек, и только те, что ещё не начались.
     """
@@ -2945,25 +3023,76 @@ def link_command(update: Update, context: CallbackContext) -> None:
         return
     context.user_data['state'] = None
     user_id = update.effective_user.id
+    seen_alive(user_id)
 
-    moment = as_moment()
-    mine = [w for w in WEBINARS
-            if user_id in registrations.get(webinar_key(w), set())
-            and webinar_is_ahead(w, moment)]
+    mine = my_webinars(user_id)
     if not mine:
         update.message.reply_text(TEXT_LINK_NONE, parse_mode='HTML',
                                   disable_web_page_preview=True)
         return
 
-    items = []
-    for w in sorted(mine, key=lambda x: webinar_start(x) or as_moment()):
+    items, keyboard = [], []
+    for w in mine:
         zoom = (w.get("zoom") or "").strip()
         template = TEXT_LINK_ITEM if zoom else TEXT_LINK_ITEM_NO_ZOOM
         items.append(template.format(date=w["date"], time=w["time"],
                                      title=clean_title(w), zoom=zoom))
+        keyboard.append([InlineKeyboardButton(
+            TEXT_MY_CANCEL_BUTTON.format(date=w["date"], time=w["time"]),
+            callback_data=f"cx:{webinar_key(w)}")])
     update.message.reply_text(
         TEXT_LINK_HEADER + "\n\n" + "\n\n".join(items),
-        parse_mode='HTML', disable_web_page_preview=True)
+        parse_mode='HTML', disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def cancel_callback(update: Update, context: CallbackContext) -> None:
+    """Отмена записи: «cx:» спрашивает, «cy:» отменяет, «cn:» оставляет.
+
+    Спрашиваем ещё раз нарочно: запись — это то, ради чего человек пришёл,
+    и терять её от одного случайного нажатия он не должен.
+    """
+    query = update.callback_query
+    answer_tap(query)
+    message = query.message
+    if message is None or message.chat.type != "private":
+        return
+    user = query.from_user
+    seen_alive(user.id)
+    action, _, key = (query.data or "").partition(":")
+
+    if action == "cn":
+        tell_tapper(query, TEXT_MY_CANCEL_KEPT)
+        return
+
+    w = find_webinar(key)
+    # Записи может уже не быть: отменили с другого устройства, или вебинар
+    # успел начаться
+    if not w or user.id not in registered_for(key) or not webinar_is_ahead(w, as_moment()):
+        tell_tapper(query, TEXT_MY_CANCEL_GONE)
+        return
+
+    if action == "cx":
+        tell_tapper(query, TEXT_MY_CANCEL_ASK.format(
+            date=w["date"], time=w["time"], title=clean_title(w)),
+            markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(TEXT_MY_CANCEL_YES,
+                                     callback_data=f"cy:{key}"),
+                InlineKeyboardButton(TEXT_MY_CANCEL_NO, callback_data="cn:"),
+            ]]))
+        return
+
+    # Сначала записываем, потом говорим «отменено» — как и при регистрации
+    cancelled.add((key, user.id))
+    if not save_registry(context.bot):
+        cancelled.discard((key, user.id))
+        tell_tapper(query, TEXT_MY_CANCEL_FAILED)
+        return
+    notify_group(context.bot, TEXT_GROUP_CANCELLED.format(
+        date=f"{w['date']} в {w['time']}",
+        user=user_link(user), username=user_handle(user)))
+    tell_tapper(query, TEXT_MY_CANCEL_DONE.format(date=w["date"],
+                                                  time=w["time"]))
 
 
 def questions(update: Update, context: CallbackContext) -> None:
@@ -3152,7 +3281,7 @@ def stats_command(update: Update, context: CallbackContext) -> None:
     for w in upcoming_webinars():
         d = parse_date(w["date"])
         key = webinar_key(w)
-        count = len(registrations.get(key, set()))
+        count = len(registered_for(key))
         done = sum(1 for e in reminded_keys if e.split("@", 1)[0] == key)
         mark = f" (напоминаний отправлено: {done} из {planned})" if done else ""
         lines.append(f"• {w['date']} в {w['time']} — {days_phrase((d - today).days)}"
@@ -3173,6 +3302,10 @@ def stats_command(update: Update, context: CallbackContext) -> None:
         soon=(TEXT_STATS_SCHEDULE_SOON.format(minutes=MINUTES_BEFORE_START)
               if REMINDER_BEFORE_START else ""),
     )
+
+    if cancelled:
+        text += "\n\n" + TEXT_STATS_CANCELLED.format(
+            count=len(cancelled), mark=TEXT_FILE_CANCELLED)
 
     if blocked:
         text += "\n\n" + TEXT_STATS_BLOCKED.format(count=len(blocked),
@@ -3521,7 +3654,7 @@ def who_command(update: Update, context: CallbackContext) -> None:
             update.message.reply_text(TEXT_WHO_NO_WEBINAR.format(date=label),
                 disable_web_page_preview=True)
             return
-        if not any(registrations.get(k) for k in dates):
+        if not any(registered_for(k) for k in dates):
             update.message.reply_text(
                 TEXT_BROADCAST_EMPTY_ONE.format(date=label),
                 disable_web_page_preview=True)
@@ -3539,7 +3672,7 @@ def who_command(update: Update, context: CallbackContext) -> None:
     # Каждый человек — один раз, сколько бы вебинаров у него ни было.
     on_dates = {}
     for date_str in dates:
-        for uid in registrations.get(date_str, set()):
+        for uid in registered_for(date_str):
             on_dates.setdefault(uid, []).append(date_str)
 
     # Порядок по id: он не меняется между вызовами, так что страницы не
@@ -3760,9 +3893,9 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
                 # или прямо написать «все».
                 that_day = set()
                 for key in keys:
-                    that_day |= registrations.get(key, set())
+                    that_day |= registered_for(key)
                 items = [f"• <code>/broadcast {date_str} {key_time(k)}</code> — "
-                         f"записано {len(registrations.get(k, set()))} чел."
+                         f"записано {len(registered_for(k))} чел."
                          for k in sessions]
                 items.append(TEXT_BROADCAST_PICK_ALL.format(
                     date=date_str, count=len(that_day)))
@@ -3775,7 +3908,7 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
                 return
         recipients = set()
         for key in keys:
-            recipients |= registrations.get(key, set())
+            recipients |= registered_for(key)
         recipients = reachable(recipients)
         if not recipients:
             update.message.reply_text(
@@ -3906,7 +4039,7 @@ def broadcast_callback(update: Update, context: CallbackContext) -> None:
     else:
         recipients = set()
         for key in job["keys"]:
-            recipients |= registrations.get(key, set())
+            recipients |= registered_for(key)
         recipients = reachable(recipients)
     _edit_question(query, TEXT_BROADCAST_SENDING.format(
         label=job["label"], count=len(recipients)))
@@ -3997,7 +4130,9 @@ def main() -> None:
 
     dispatcher.add_handler(CommandHandler('start', start))
     dispatcher.add_handler(CommandHandler('register', register))
-    dispatcher.add_handler(CommandHandler('link', link_command))
+    dispatcher.add_handler(CommandHandler('my', my_command))
+    # «/link» остаётся: он написан в старых сообщениях у людей
+    dispatcher.add_handler(CommandHandler('link', my_command))
     dispatcher.add_handler(CommandHandler('questions', questions))
     dispatcher.add_handler(CommandHandler('help', help_command))
     dispatcher.add_handler(CommandHandler('courses', courses))
@@ -4015,6 +4150,8 @@ def main() -> None:
     dispatcher.add_handler(CallbackQueryHandler(poll_callback, pattern=r'^pv:'))
     dispatcher.add_handler(CallbackQueryHandler(info_callback, pattern=r'^info:'))
     dispatcher.add_handler(CallbackQueryHandler(ask_callback, pattern=r'^ask:'))
+    dispatcher.add_handler(
+        CallbackQueryHandler(cancel_callback, pattern=r'^c[xyn]:'))
     # «vn:» — так назывались кнопки, когда рассылать можно было только кружок.
     # Старые кнопки остались в группе и должны честно сказать «не действует».
     dispatcher.add_handler(
@@ -4031,7 +4168,7 @@ def main() -> None:
     # Служебные команды в меню намеренно не показываем.
     updater.bot.set_my_commands([
         BotCommand("register", "Регистрация на вебинар"),
-        BotCommand("link", "Ссылка на мой вебинар"),
+        BotCommand("my", "Мои вебинары и ссылки"),
         BotCommand("questions", "Вопросы для спикера"),
         BotCommand("courses", "Все курсы и вебинары Tillo"),
     ] + [BotCommand(p["command"], p["menu"]) for p in INFO_PAGES] + [
