@@ -60,9 +60,11 @@ ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "0"))
 # сообщением: люди быстро забывают, на что записались. Можно оставить "" —
 # тогда второе сообщение не уйдёт. Переносы строк — \n, жирный — <b>так</b>.
 #
-# "zoom" — ссылка именно на этот сеанс. Она попадёт в напоминание вместо
-# {zoom}. У утреннего и вечернего сеанса ссылки РАЗНЫЕ, поэтому каждая
-# лежит рядом со своим вебинаром. Пока не заполнили — оставьте "".
+# "zoom" — ссылка именно на этот сеанс. Бот пришлёт её лично тому, кто нажмёт
+# «Пойду, дайте ссылку» под напоминанием (или «Ссылка» в /my); вписывать её
+# в тексты напоминаний не нужно. У утреннего и вечернего сеанса ссылки
+# РАЗНЫЕ, поэтому каждая лежит рядом со своим вебинаром. Пока не заполнили —
+# оставьте "".
 WEBINARS = [
     {
         "date": "30.09.2026",
@@ -178,6 +180,25 @@ REMINDER_BEFORE_START = True
 # если сервис проснулся где-то внутри него, напоминание всё равно уйдёт.
 MINUTES_BEFORE_START = 75
 
+# Кнопка «Пойду, дайте ссылку» вместо самой ссылки. Ссылку на вход бот не пишет
+# в текст напоминания: он кладёт под сообщение кнопку, ссылку присылает лично
+# тому, кто нажал, и отмечает его в registry.xlsx (столбец «запросил(а) ссылку»).
+# Сюда — числа из REMINDER_DAYS, в чьи напоминания добавлять кнопку (в тексте
+# такого напоминания {zoom} не нужен). Напоминание «перед началом» несёт
+# кнопку всегда. Пустой список [] — кнопки только в «перед началом» и в /my.
+LINK_BUTTON_DAYS = [1]
+
+# Сколько минут после начала вебинара на него ещё можно записаться и взять
+# ссылку: чтобы тот, кто добежал в последний момент, не остался ни с чем.
+# Когда вебинар закончился, ссылка уже не нужна, поэтому «на сутки» ставить не
+# стоит. 120 — это два часа.
+LATE_REGISTRATION_MINUTES = 120
+
+# Через сколько секунд после нажатия «Пойду» бот записывает нажавшего в файл.
+# Нажатия приходят пачкой сразу после напоминания, а каждое сохранение — это
+# сообщение в группу, поэтому всех нажавших бот записывает за один раз.
+LINK_SAVE_DELAY = 20
+
 # По скольким последним опросам бот ведёт счёт ответов. Счёт хранится в
 # закреплённом сообщении, поэтому много не надо: по старому опросу ответ всё
 # равно придёт в группу, только без общего счёта.
@@ -257,6 +278,14 @@ TEXT_REGISTER_DONE_SOON = (
     "Вебинар уже совсем скоро — ссылку пришлю следующим сообщением."
 )
 
+# Записались, когда вебинар уже начался (сколько на это дано времени — в
+# LATE_REGISTRATION_MINUTES наверху): ссылка уходит сразу, следующим сообщением
+TEXT_REGISTER_DONE_LIVE = (
+    "Готово! Записали вас на <b>{date}</b> в {time}\n\n"
+    "<b>{title}</b>\n\n"
+    "Вебинар уже идёт — ссылка следующим сообщением, заходите!"
+)
+
 # Второе сообщение сразу после записи — подробности о вебинаре.
 # {date}, {time}, {title} и {about} подставляются автоматически; {about} —
 # это поле "about" вебинара из списка выше.
@@ -268,8 +297,8 @@ TEXT_REGISTER_DETAILS = (
 # Хвост этого сообщения — одинаковый для всех вебинаров
 TEXT_REGISTER_DETAILS_TAIL = (
     "Напомню заранее — за несколько дней и ещё раз перед самым началом. "
-    "Ссылка на вход придёт в напоминании, а посмотреть её можно в любой "
-    "момент командой /my."
+    "В напоминаниях за день и перед началом будет кнопка: нажмёте — и ссылка "
+    "на вход придёт вам сюда. Взять её можно и в любой момент командой /my."
 )
 
 TEXT_REGISTER_ALREADY = "Вы уже записаны на этот вебинар 🙂"
@@ -330,17 +359,46 @@ TEXT_MY_CANCEL_FAILED = (
     "Не получилось отменить запись — попробуйте, пожалуйста, ещё раз чуть "
     "позже."
 )
-# {date}, {time}, {title}, {zoom} подставляются автоматически
+# {date}, {time}, {title} подставляются автоматически. Самой ссылки в этом
+# сообщении нет: бот присылает её лично, когда нажмут кнопку под ним.
 TEXT_LINK_ITEM = (
     "<b>{date} в {time}</b> (по московскому времени)\n"
     "{title}\n"
-    "🔗 {zoom}"
+    "Ссылка — по кнопке ниже."
 )
 # То же, но ссылка в расписании ещё не заполнена
 TEXT_LINK_ITEM_NO_ZOOM = (
     "<b>{date} в {time}</b> (по московскому времени)\n"
     "{title}\n"
     "Ссылку пришлём ближе к началу."
+)
+
+# --- «Пойду, дайте ссылку»: ссылка приходит лично тому, кто нажал кнопку -----
+# Надпись на кнопке под напоминаниями «за день» и «перед началом»
+TEXT_LINK_BUTTON = "Пойду, дайте ссылку"
+# Та же кнопка в /my: там под сообщением несколько кнопок, поэтому с названием
+TEXT_MY_LINK_BUTTON = "Ссылка: {date} в {time}"
+# Сама ссылка, лично. {date}, {time}, {title}, {zoom} подставляются автоматически
+TEXT_LINK_SENT = (
+    "Ссылка на вебинар <b>{date} в {time}</b> (по московскому времени):\n"
+    "<b>{title}</b>\n\n"
+    "🔗 {zoom}\n\n"
+    "До встречи! 🙂"
+)
+# Нажали, а ссылка в расписании ещё не заполнена
+TEXT_LINK_NOT_YET = (
+    "Ссылка на этот вебинар пока не готова — пришлём её ближе к началу. "
+    "Нажмите кнопку чуть позже 🙂"
+)
+# Кнопку нажал тот, кто на этот сеанс не записан: сообщение переслали или он
+# отменил запись
+TEXT_LINK_NOT_REGISTERED = (
+    "Вы не записаны на этот вебинар. Нажмите /register — запишу и пришлю ссылку."
+)
+# Вебинар уже закончился
+TEXT_LINK_OVER = (
+    "Этот вебинар уже закончился, ссылка больше не нужна. Что дальше — по "
+    "команде /register."
 )
 
 TEXT_QUESTIONS = "Напишите ваш вопрос — я передам его спикеру."
@@ -490,7 +548,10 @@ TEXT_UNKNOWN_BUTTON = "✍️ Задать вопрос"
 # Меняйте только то, что внутри кавычек. Бот подставит сам:
 #   {time}   время вебинара: 11:00
 #   {title}  название вебинара из расписания выше
-#   {zoom}   ссылка на зум этого сеанса (поле "zoom" в расписании)
+#   {zoom}   ссылка на зум этого сеанса (поле "zoom" в расписании). Сейчас её
+#            в тексты не вписывают: под напоминаниями «за день» и «перед
+#            началом» бот сам кладёт кнопку «Пойду, дайте ссылку» (см.
+#            LINK_BUTTON_DAYS наверху файла) и присылает ссылку нажавшему.
 # Всё остальное — «через 5 дней», даты, имя спикера, что угодно — пишите
 # словами прямо в тексте. Других слов в фигурных скобках быть не должно
 # (кроме {when} в запасном тексте в конце блока — там он нужен).
@@ -545,23 +606,23 @@ TEXT_REMINDERS = {
         "Ждём вас! 🙂"
     ),
 
-    # Накануне, за день. Здесь уже есть ссылка — заполните "zoom" в расписании
+    # Накануне, за день. Вместо ссылки здесь кнопка (LINK_BUTTON_DAYS наверху
+    # файла): нажмут — бот пришлёт ссылку лично. "zoom" в расписании заполните
     1: (
         "Привет! Напоминаем: вебинар <b>уже завтра</b> в {time} "
         "(по московскому времени)\n\n"
         "<b>{title}</b>\n\n"
-        "🔗 Ссылка для входа: {zoom}\n\n"
-        "Сохраните её, чтобы не искать завтра. До встречи! 🙂"
+        "Нажмите кнопку ниже — и ссылка на вход придёт вам сюда. "
+        "До встречи! 🙂"
     ),
 }
 
-# Примерно за час до начала. Тоже со ссылкой.
+# Примерно за час до начала. Тоже с кнопкой «Пойду, дайте ссылку».
 TEXT_REMINDER_SOON = (
     "Привет! Вебинар начинается <b>уже совсем скоро</b>, в {time} по московскому "
     "времени\n\n"
     "<b>{title}</b>\n\n"
-    "🔗 Ссылка для входа: {zoom}\n\n"
-    "Ждём вас! 🙂"
+    "Нажмите кнопку ниже — ссылка на вход придёт сразу. Ждём вас! 🙂"
 )
 
 # Если для какого-то числа из REMINDER_DAYS текст выше не написан —
@@ -991,8 +1052,11 @@ TEXT_ADMIN_HELP = (
     "<b>Как поменять текст напоминания</b>\n"
     "Всё в " + LINK_REMINDERS_FULL + " — у каждого напоминания свой текст: "
     "за 5 дней, за 3, за 2 и накануне. Меняйте что угодно внутри кавычек; "
-    "{time}, {title} и {zoom} бот подставит сам. Напоминания уходят сами — "
-    "записывать их отдельно не нужно."
+    "{time} и {title} бот подставит сам. Ссылку на зум в текст не вписывайте: "
+    "под напоминанием накануне и под «скоро» бот сам кладёт кнопку «Пойду, "
+    "дайте ссылку» — нажавшему он присылает ссылку лично, а в файле "
+    "registry.xlsx появляется отметка в столбце «запросил(а) ссылку». "
+    "Напоминания уходят сами — записывать их отдельно не нужно."
 )
 
 # Строчка в /stats: где лежит сам список
@@ -1108,7 +1172,7 @@ TEXT_REGISTRY_IN_FILE = (
 # Заголовки столбцов в registry.xlsx — по строке на каждую запись на вебинар.
 # Названия можно менять, порядок — нет: бот читает столбцы по порядку.
 TEXT_FILE_HEADER = ("id", "вебинар", "имя", "username", "записан(а), МСК",
-                    "статус")
+                    "статус", "запросил(а) ссылку, МСК")
 # Что стоит в столбце «статус» у тех, кто заблокировал бота. Их НЕ удаляют:
 # они остаются в списке, просто рассылки им больше не уходят.
 TEXT_FILE_BLOCKED = "заблокировал(а) бота"
@@ -1156,6 +1220,16 @@ TEXT_GROUP_NO_ZOOM = (
     "Напоминание ушло без ссылки. Заполните ссылку в расписании в "
     + LINK_WEBINARS + " — "
     "у утреннего и вечернего сеанса она своя."
+)
+
+# То же для напоминания с кнопкой «Пойду, дайте ссылку»: оно ушло, но по
+# кнопке пока нечего прислать. {webinar} — какой вебинар, {field} — что заполнить.
+TEXT_GROUP_NO_ZOOM_BUTTON = (
+    "⚠️ Напоминание про вебинар {webinar} ушло с кнопкой «ссылка», но поле "
+    "{field} у него пустое.\n"
+    "Кто нажмёт кнопку, получит «ссылка пока не готова». Заполните ссылку в "
+    "расписании в " + LINK_WEBINARS + " — у утреннего и вечернего сеанса она "
+    "своя, а кнопка заработает сама."
 )
 
 # Телеграм не понял HTML-разметку в тексте напоминания, и оно ушло тем же
@@ -1383,6 +1457,21 @@ people = {}
 # Когда человек записался на вебинар: (ключ вебинара, id) -> '2026-09-25 17:24'
 # по Москве. У записавшихся до 25.09 этого нет — тогда время не хранилось.
 signed_at = {}
+# Кто нажал «Пойду, дайте ссылку»: (ключ вебинара, id) -> '2026-10-16 11:40' по
+# Москве, время первого нажатия. В файле это столбец G. Тех, кто не нажимал,
+# в словаре нет, и в файле у них пустая клетка.
+link_asked = {}
+# Нажатия, которых в файле ещё нет, записывает link_flush_job одним сохранением
+# на всех: они приходят пачкой сразу после напоминания, а каждое сохранение
+# файла — это сообщение в группу (их там ~20 в минуту). Версии нужны, чтобы
+# любое другое сохранение (запись на вебинар) заодно закрывало эту нужду, а
+# нажатие, пришедшее посреди сохранения, не терялось.
+_asked_version = 0           # растёт с каждым новым нажатием
+_saved_version = 0           # на какой версии записан файл
+_flush_pending = False       # запись уже поставлена в очередь
+_flush_failures = 0          # подряд неудачных записей
+LINK_FLUSH_JOB = "link_flush"
+LINK_FLUSH_RETRIES = 5       # столько раз повторяем неудавшуюся запись
 # Когда этот процесс запустился — /health показывает это, чтобы было видно,
 # что сервис недавно перезапускался (на бесплатном тарифе это норма).
 STARTED_AT = now_local()
@@ -1710,9 +1799,17 @@ def fill_sheet(ws, keys, snap) -> None:
             if marks:
                 cell = ws.cell(row=row, column=6, value=", ".join(marks))
                 cell.data_type = "s"
+            # Когда нажал «Пойду, дайте ссылку». Отдельный столбец G, а не
+            # пометка в «статусе»: любой незнакомый текст в «статусе» старый
+            # разбор читает как «заблокировал бота».
+            asked = link_asked.get((key, uid))
+            if asked:
+                cell = ws.cell(row=row, column=7, value=datetime.datetime.strptime(
+                    asked, "%Y-%m-%d %H:%M"))
+                cell.number_format = "yyyy-mm-dd hh:mm"
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:F{row}"
-    for letter, width in zip("ABCDEF", (13, 17, 32, 20, 18, 22)):
+    ws.auto_filter.ref = f"A1:G{row}"
+    for letter, width in zip("ABCDEFG", (13, 17, 32, 20, 18, 22, 22)):
         ws.column_dimensions[letter].width = width
 
 
@@ -1740,12 +1837,13 @@ def registry_xlsx(snap, today: datetime.date = None) -> bytes:
 
 
 def parse_registry_xlsx(data: bytes):
-    """registry.xlsx: (записи, люди, время записи, заблокировавшие, отменившие).
+    """registry.xlsx: (записи, люди, время записи, заблокировавшие, отменившие,
+    нажавшие «Пойду, дайте ссылку»).
 
     Непонятная строка — ошибка, а не пропуск: это наш собственный файл, и
     испорченный файл нельзя принять за прочитанный.
     """
-    regs, ppl, times, blk, cnc = {}, {}, {}, set(), set()
+    regs, ppl, times, blk, cnc, asked = {}, {}, {}, set(), set(), {}
     wb = load_workbook(io.BytesIO(data), read_only=True)
     try:
         # Читаем ВСЕ листы: и «Записи», и «Архив» — для бота это один список.
@@ -1782,9 +1880,21 @@ def parse_registry_xlsx(data: bytes):
             if TEXT_FILE_BLOCKED in status or (
                     status and TEXT_FILE_CANCELLED not in status):
                 blk.add(uid)
+            # Столбец G: когда нажал «Пойду, дайте ссылку». Старый файл на 6
+            # столбцов его просто не имеет. Что не похоже на время — не берём:
+            # из-за одной такой клетки запись файла потом бы не прошла.
+            got = row[6] if len(row) > 6 else None
+            if isinstance(got, datetime.datetime):
+                asked[(key, uid)] = got.strftime("%Y-%m-%d %H:%M")
+            elif got:
+                try:
+                    datetime.datetime.strptime(str(got).strip(), "%Y-%m-%d %H:%M")
+                    asked[(key, uid)] = str(got).strip()
+                except ValueError:
+                    pass
     finally:
         wb.close()
-    return regs, ppl, times, blk, cnc
+    return regs, ppl, times, blk, cnc, asked
 
 
 def prune_past_sent(today: datetime.date = None) -> int:
@@ -1857,13 +1967,13 @@ def load_registry(bot) -> bool:
                      "в нём нет — НИЧЕГО не пишу", total)
         return False
 
-    regs, ppl, times, blk, cnc = {}, {}, {}, set(), set()
+    regs, ppl, times, blk, cnc, asked = {}, {}, {}, set(), set(), {}
     if "FILE" in pointers:
         try:
             data = download_registry(bot, pointers["FILE"][1])
             if data[:2] != b"PK":            # xlsx — это zip-архив
                 raise ValueError("файл списка не в формате xlsx")
-            regs, ppl, times, blk, cnc = parse_registry_xlsx(data)
+            regs, ppl, times, blk, cnc, asked = parse_registry_xlsx(data)
             count = len(set().union(*regs.values())) if regs else 0
             # «Всего» записано в сообщение тем же сохранением, что и файл.
             # Файл, оборвавшийся на границе строки, разбирается без ошибок,
@@ -1896,6 +2006,8 @@ def load_registry(bot) -> bool:
             signed_at.setdefault(pair, when)
         blocked.update(blk)
         cancelled.update(cnc)
+        for pair, when in asked.items():
+            link_asked.setdefault(pair, when)
     reminded_keys.update(sent)
     # Счета опросов: из закрепа, но то, что память уже насчитала, не теряем
     for pid, (counts, target) in parse_polls(pinned.text).items():
@@ -2078,6 +2190,7 @@ def save_registry(bot) -> bool:
 
 def _save_registry(bot) -> bool:
     global registry_message_id, file_pointer, prev_pointer, last_pin_text
+    global _saved_version
 
     if not ADMIN_CHAT_ID:
         # Режим без группы (локальный запуск): сохранять негде, но и падать
@@ -2102,6 +2215,9 @@ def _save_registry(bot) -> bool:
 
     # Один снимок на всё сохранение: из него и файл, и сообщение — чтобы
     # регистрация, пришедшая посередине, не развела их «Всего».
+    # Версию нажатий «Пойду» запоминаем ДО файла: нажатие, пришедшее посреди
+    # сохранения, в файл могло и не попасть, и тогда оно останется «несохранённым».
+    version = _asked_version
     snap = snapshot()
     data = registry_xlsx(snap)
 
@@ -2148,6 +2264,7 @@ def _save_registry(bot) -> bool:
         logger.error("Не удалось сохранить список подписчиков: %s", e)
         return False
     last_pin_text = new_pin
+    _saved_version = max(_saved_version, version)
 
     # 3. Файл старше предыдущего больше нигде не упомянут
     if old_prev and DELETE_OLD_REGISTRY_FILES:
@@ -2549,16 +2666,165 @@ def link_reminders_done(key: str) -> bool:
     return True          # напоминаний нет вовсе — ссылка нужна сразу
 
 
-def send_link_now(bot, w, user_id: int) -> bool:
-    """Шлёт записавшемуся то же напоминание «скоро», что получили остальные."""
-    text, note = reminder_text(w, TEXT_WHEN_SOON, reminder_template(None))
-    if note:
+def link_window_open(w, moment=None) -> bool:
+    """Можно ли ещё записаться на этот вебинар и взять ссылку.
+
+    Пока он не начался и ещё LATE_REGISTRATION_MINUTES после начала: кто
+    добежал в последний момент, не должен услышать «вебинар уже прошёл».
+    Отдельно от webinar_is_ahead: тот решает, что считать «ещё впереди» в
+    /courses, /stats и в напоминаниях, и там границей по-прежнему остаётся
+    начало вебинара.
+    """
+    moment = as_moment(moment)
+    start = webinar_start(w)
+    if start is not None:
+        return start + datetime.timedelta(
+            minutes=LATE_REGISTRATION_MINUTES) > moment
+    d = parse_date(w["date"])      # время не разобрали — сравним хотя бы даты
+    return d is not None and d >= moment.date()
+
+
+def registerable_webinars(when=None):
+    """Вебинары, на которые ещё можно записаться, по возрастанию даты."""
+    moment = as_moment(when)
+    found = []
+    for w in WEBINARS:
+        d = parse_date(w["date"])
+        if d and link_window_open(w, moment):
+            found.append((d, w))
+    found.sort(key=lambda pair: pair[0])
+    return [w for _, w in found]
+
+
+def link_button(w):
+    """Кнопка «Пойду, дайте ссылку» под напоминанием про вебинар w."""
+    return (TEXT_LINK_BUTTON, f"{CALLBACK_PREFIX}lk:{webinar_key(w)}")
+
+
+def warn_no_zoom(bot, w, warned) -> None:
+    """Напоминание уходит с кнопкой «ссылка», а ссылки в расписании нет.
+
+    Раньше об этом предупреждало слово {zoom} в тексте напоминания; теперь его
+    там нет, поэтому проверяем сами: по кнопке нечего будет прислать.
+    """
+    if (w.get("zoom") or "").strip():
+        return
+    logger.error("У вебинара %s не заполнена ссылка на зум", webinar_key(w))
+    note = TEXT_GROUP_NO_ZOOM_BUTTON.format(
+        webinar=html.escape(key_label(webinar_key(w))), field="\"zoom\"")
+    if note not in warned:
         notify_group(bot, note)
-    sent, _, markup_error = broadcast(bot, text, {user_id},
-                                      markup_fallback=True)
-    if markup_error:
-        warn_markup(bot, markup_error)
-    return bool(sent)
+        warned.add(note)
+
+
+def deliver_link(bot, w, user_id: int) -> bool:
+    """Присылает человеку ссылку на этот сеанс лично. True — сообщение ушло."""
+    zoom = (w.get("zoom") or "").strip()
+    if not zoom:
+        return False
+    try:
+        with_retry(lambda: bot.send_message(
+            chat_id=user_id, parse_mode='HTML', disable_web_page_preview=True,
+            text=TEXT_LINK_SENT.format(
+                date=w["date"], time=w["time"], title=clean_title(w),
+                zoom=html.escape(zoom, quote=False))))
+    except TelegramError as e:
+        logger.warning("Не удалось прислать ссылку %s: %s", user_id, e)
+        return False
+    return True
+
+
+def note_link_request(key: str, user_id: int, job_queue=None) -> bool:
+    """Запоминает, что человек взял ссылку. True — взял впервые.
+
+    Повторное нажатие ссылку присылает снова, но второй раз не считается.
+    В файл это попадает при ближайшем сохранении; чтобы нажатия, пришедшие
+    пачкой, не давали по сохранению на каждое, запись откладывается на
+    LINK_SAVE_DELAY секунд и идёт одна на всех.
+    """
+    global _asked_version
+    pair = (key, user_id)
+    if pair in link_asked:
+        return False
+    link_asked[pair] = now_msk()
+    _asked_version += 1
+    schedule_link_flush(job_queue)
+    return True
+
+
+def schedule_link_flush(job_queue, delay: int = None) -> None:
+    global _flush_pending
+    if job_queue is None or _flush_pending:
+        return
+    _flush_pending = True
+    job_queue.run_once(link_flush_job,
+                       LINK_SAVE_DELAY if delay is None else delay,
+                       name=LINK_FLUSH_JOB)
+
+
+def link_flush_job(context: CallbackContext) -> None:
+    """Записывает накопившиеся нажатия в файл — одним сохранением на всех."""
+    global _flush_pending, _flush_failures
+    _flush_pending = False
+    if _asked_version == _saved_version:
+        return                  # их уже записало другое сохранение
+    if save_registry(context.bot):
+        _flush_failures = 0
+    else:
+        _flush_failures += 1
+        logger.error("Нажатия «Пойду» не записались в файл (попытка %s из %s)",
+                     _flush_failures, LINK_FLUSH_RETRIES)
+    # Не вышло, или пришли новые, пока писали: ещё раз — но не бесконечно.
+    # Дальше нажатия подберёт любое следующее сохранение.
+    if _asked_version != _saved_version and _flush_failures < LINK_FLUSH_RETRIES:
+        schedule_link_flush(context.job_queue,
+                            delay=60 if _flush_failures else None)
+
+
+def link_callback(update: Update, context: CallbackContext) -> None:
+    """«Пойду, дайте ссылку»: ссылка на тот сеанс, под которым нажали — лично
+    тому, кто нажал, и только если он на этот сеанс записан.
+
+    Сначала ссылка, потом отметка: человеку нужна ссылка, а отметка — это
+    счёт для владельца, и из-за неё ссылку задерживать нельзя.
+    """
+    query = update.callback_query
+    answer_tap(query)
+    user = query.from_user
+    key = (query.data or "").partition(":")[2]
+    seen_alive(user.id)
+    w = find_webinar(key)
+
+    def say(text):
+        try:
+            context.bot.send_message(chat_id=user.id, text=text,
+                                     parse_mode='HTML',
+                                     disable_web_page_preview=True)
+        except TelegramError as e:
+            logger.warning("Не удалось ответить на кнопку со ссылкой: %s", e)
+
+    if w is None or not link_window_open(w):
+        say(TEXT_LINK_OVER)
+        return
+    # Сообщение могли переслать, а запись — отменить: ссылку получает только
+    # записанный именно на этот сеанс
+    if user.id not in registered_for(key):
+        say(TEXT_LINK_NOT_REGISTERED)
+        return
+    if not (w.get("zoom") or "").strip():
+        say(TEXT_LINK_NOT_YET)
+        return
+    if deliver_link(context.bot, w, user.id):
+        note_link_request(key, user.id, getattr(context, "job_queue", None))
+
+
+def send_link_now(bot, w, user_id: int, job_queue=None) -> bool:
+    """Записавшемуся поздно — ссылка сразу, лично, без лишнего нажатия: он
+    только что сам записался, и это считается за «пойду»."""
+    if not deliver_link(bot, w, user_id):
+        return False
+    note_link_request(webinar_key(w), user_id, job_queue)
+    return True
 
 
 def send_reminders(bot, today: datetime.date = None) -> int:
@@ -2638,6 +2904,9 @@ def _send_reminders(bot, today: datetime.date = None) -> int:
             notify_group(bot, note)
             warned.add(note)
         text, buttons, poll_id = reminder_poll(bot, w, text, days_left)
+        if days_left in LINK_BUTTON_DAYS:
+            buttons = (buttons or []) + [link_button(w)]
+            warn_no_zoom(bot, w, warned)
         sent, failed, markup_error = broadcast(bot, text, recipients,
                                                markup_fallback=True,
                                                buttons=buttons,
@@ -2713,8 +2982,10 @@ def _send_start_reminders(bot, now: datetime.datetime = None) -> int:
         if note and note not in warned:
             notify_group(bot, note)
             warned.add(note)
+        warn_no_zoom(bot, w, warned)
         sent, failed, markup_error = broadcast(bot, text, recipients,
-                                               markup_fallback=True)
+                                               markup_fallback=True,
+                                               buttons=[link_button(w)])
         if markup_error and "markup" not in warned:
             warn_markup(bot, markup_error)
             warned.add("markup")
@@ -2798,7 +3069,9 @@ def button_label(w) -> str:
 
 def register(update: Update, context: CallbackContext) -> None:
     context.user_data['state'] = None
-    upcoming = upcoming_webinars()
+    # Не только «ещё не начались»: ещё LATE_REGISTRATION_MINUTES после начала
+    # на вебинар можно записаться и сразу получить ссылку
+    upcoming = registerable_webinars()
     # Разделы показываем и когда вебинаров нет: иначе предложение курса
     # пропадает ровно тогда, когда расписание пустое
     extra = info_buttons()
@@ -2987,8 +3260,10 @@ def register_callback(update: Update, context: CallbackContext) -> None:
     seen_alive(user.id)
     w = find_webinar(key)
 
-    # Кнопку могли нажать на старом сообщении — вебинар мог уже начаться
-    if w is None or not webinar_is_ahead(w, as_moment()):
+    # Кнопку могли нажать на старом сообщении. Записаться можно и в первые
+    # минуты после начала (LATE_REGISTRATION_MINUTES), а потом уже поздно
+    now = as_moment()
+    if w is None or not link_window_open(w, now):
         tell_tapper(query, TEXT_REGISTER_GONE)
         return
 
@@ -3016,18 +3291,24 @@ def register_callback(update: Update, context: CallbackContext) -> None:
         user=user_link(user), username=user_handle(user),
     ))
 
-    # Записался после того, как все напоминания уже разосланы: ссылку он
-    # иначе не получит вовсе — шлём её прямо сейчас, тем же текстом.
-    late = link_reminders_done(key)
-    template = TEXT_REGISTER_DONE_SOON if late else TEXT_REGISTER_DONE
+    # Вебинар уже идёт — ссылка нужна сразу. Или записался после того, как все
+    # напоминания разосланы: ссылку он иначе не получит вовсе. И в том и в
+    # другом случае шлём её прямо сейчас, лично.
+    live = not webinar_is_ahead(w, now)
+    late = live or link_reminders_done(key)
+    template = (TEXT_REGISTER_DONE_LIVE if live else
+                TEXT_REGISTER_DONE_SOON if late else TEXT_REGISTER_DONE)
     tell_tapper(query, template.format(
         date=w["date"], time=w["time"], title=clean_title(w)))
     if late:
-        if send_link_now(context.bot, w, user.id):
+        if send_link_now(context.bot, w, user.id,
+                         getattr(context, "job_queue", None)):
             logger.info("Записался поздно — ссылку на %s отправил сразу", key)
         else:
             logger.error("Не удалось сразу отправить ссылку на %s кому-то, "
                          "кто записался после всех напоминаний", key)
+    if live:
+        return          # он уже идёт на вебинар: подробности ему ни к чему
 
     # Подробности последним сообщением: «люди забывают очень быстро, на
     # что они записались». Именно последним — подтверждение обещает, что
@@ -3050,7 +3331,7 @@ def my_webinars(user_id: int):
     moment = as_moment()
     mine = [w for w in WEBINARS
             if user_id in registered_for(webinar_key(w))
-            and webinar_is_ahead(w, moment)]
+            and link_window_open(w, moment)]
     return sorted(mine, key=lambda x: webinar_start(x) or as_moment())
 
 
@@ -3074,18 +3355,25 @@ def my_command(update: Update, context: CallbackContext) -> None:
         return
 
     items, keyboard = [], []
+    now = as_moment()
     for w in mine:
         zoom = (w.get("zoom") or "").strip()
         template = TEXT_LINK_ITEM if zoom else TEXT_LINK_ITEM_NO_ZOOM
         items.append(template.format(date=w["date"], time=w["time"],
                                      title=clean_title(w), zoom=zoom))
-        keyboard.append([InlineKeyboardButton(
-            TEXT_MY_CANCEL_BUTTON.format(date=w["date"], time=w["time"]),
-            callback_data=f"cx:{webinar_key(w)}")])
+        if zoom:
+            # Ссылку отдаёт кнопка, а не текст: так видно, кто её взял
+            keyboard.append([InlineKeyboardButton(
+                TEXT_MY_LINK_BUTTON.format(date=w["date"], time=w["time"]),
+                callback_data=f"lk:{webinar_key(w)}")])
+        if webinar_is_ahead(w, now):      # после начала запись уже не отменить
+            keyboard.append([InlineKeyboardButton(
+                TEXT_MY_CANCEL_BUTTON.format(date=w["date"], time=w["time"]),
+                callback_data=f"cx:{webinar_key(w)}")])
     update.message.reply_text(
         TEXT_LINK_HEADER + "\n\n" + "\n\n".join(items),
         parse_mode='HTML', disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup(keyboard))
+        reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
 
 
 def cancel_callback(update: Update, context: CallbackContext) -> None:
@@ -3326,6 +3614,12 @@ def stats_command(update: Update, context: CallbackContext) -> None:
         count = len(registered_for(key))
         done = sum(1 for e in reminded_keys if e.split("@", 1)[0] == key)
         mark = f" (напоминаний отправлено: {done} из {planned})" if done else ""
+        # Сколько записанных уже взяли ссылку по кнопке «Пойду, дайте ссылку» —
+        # то, ради чего кнопка и сделана: дошёл ли до нас человек из бота
+        ids = registered_for(key)
+        asked = sum(1 for (k, uid) in list(link_asked) if k == key and uid in ids)
+        if asked:
+            mark += f", ссылку взяли: {asked} из {count}"
         lines.append(f"• {w['date']} в {w['time']} — {days_phrase((d - today).days)}"
                      f" — записано {count} чел.{mark}")
 
@@ -3542,6 +3836,13 @@ def split_buttons(body: str):
     return "\n".join(kept).strip(), [(label, url) for _, label, url in found], None
 
 
+# Вместо ссылки в паре (надпись, ссылка) — «callback:данные»: кнопка, которую
+# бот обрабатывает сам (например «Пойду, дайте ссылку»). Такую пару собирает
+# только код: split_buttons пропускает лишь http, https и tg, так что из текста
+# рассылки её не набрать.
+CALLBACK_PREFIX = "callback:"
+
+
 def buttons_markup(buttons, poll_id=None):
     """Кнопки: ссылки — по одной в ряд, ответы опроса — в одну строку.
 
@@ -3554,6 +3855,10 @@ def buttons_markup(buttons, poll_id=None):
         return None
     rows, answers = [], []
     for label, url in buttons:
+        if url and url.startswith(CALLBACK_PREFIX):
+            rows.append([InlineKeyboardButton(
+                label, callback_data=url[len(CALLBACK_PREFIX):])])
+            continue
         if url:
             rows.append([InlineKeyboardButton(label, url=url)])
             continue
@@ -4190,6 +4495,7 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler('who', who_command))
     dispatcher.add_handler(CallbackQueryHandler(register_callback, pattern=r'^reg:'))
     dispatcher.add_handler(CallbackQueryHandler(poll_callback, pattern=r'^pv:'))
+    dispatcher.add_handler(CallbackQueryHandler(link_callback, pattern=r'^lk:'))
     dispatcher.add_handler(CallbackQueryHandler(info_callback, pattern=r'^info:'))
     dispatcher.add_handler(CallbackQueryHandler(ask_callback, pattern=r'^ask:'))
     dispatcher.add_handler(
