@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import html
 import io
 import itertools
@@ -497,6 +498,11 @@ TEXT_UNKNOWN_BUTTON = "✍️ Задать вопрос"
 # Число перед текстом (5:, 3:, …) — за сколько дней до вебинара он уходит.
 # Поменяли число — поменяйте и «через 5 дней» в самом тексте.
 #
+# Две и больше строк в квадратных скобках, каждая на своей строке — [Да] и
+# [Нет] — бот делает кнопками опроса, как в /broadcast: ответы приходят в
+# группу со счётом, оба сеанса дня считаются вместе. Вопрос пишите последней
+# строкой текста, прямо перед кнопками: из неё берётся подпись ответа в группе.
+#
 # ⚠️ Тексты написаны под конкретный вебинар: в них словами вписаны дата и
 # имя спикера. Перед следующим вебинаром обновите их — бот этого не сделает.
 # ============================================================================
@@ -519,14 +525,14 @@ TEXT_REMINDERS = {
 
     # За 3 дня
     3: (
-        "Привет! Напоминаем: <b>через 3 дня</b> в {time} вебинар\n\n"
-        "<b>{title}</b>\n\n"
-        "Разберём, как отличить переутомление от выгорания, какие симптомы "
-        "не стоит списывать на обычную усталость и что действительно "
-        "помогает восстановлению.\n\n"
-        "💬 Вопрос спикеру можно прислать заранее: меню бота → "
-        "<b>«Вопросы для спикера»</b>.\n\n"
-        "Ждём вас! 🙂"
+        "Привет! 🙂 Уже через <b>3 дня</b> встречаемся на вебинаре с Ириной "
+        "Галеевой!\n\n"
+        "«Упадок сил, выгорание или гормональный сбой? Как понять, что с тобой "
+        "происходит»\n\n"
+        "А пока хотим спросить: списываете ли вы усталость на стресс, но "
+        "подозреваете, что причина может быть в другом? 👇\n"
+        "[Да]\n"
+        "[Нет]"
     ),
 
     # За 2 дня
@@ -2562,6 +2568,35 @@ def send_reminders(bot, today: datetime.date = None) -> int:
         return _send_reminders(bot, today)
 
 
+def reminder_poll(bot, w, text: str, days_left: int):
+    """Строки-ответы [Да] / [Нет] в тексте напоминания — опрос, как в /broadcast.
+
+    Возвращает (текст без этих строк, кнопки или None, номер опроса или None).
+    Номер не случайный, а от даты вебинара и дня напоминания: оба сеанса дня
+    отвечают в один счёт, а повторная отправка (/check, перезапуск) не заведёт
+    второй. Не собралось — напоминание уходит как есть, без кнопок: лучше без
+    опроса, чем без напоминания.
+    """
+    try:
+        body, buttons, error = split_buttons(text)
+        if error:
+            logger.error("Кнопки в тексте напоминания не разобрались: %s", error)
+            return text, None, None
+        if not buttons:
+            return text, None, None
+        poll_id = None
+        answers = sum(1 for _, url in buttons if url is None)
+        if answers:
+            seed = f"reminder:{w['date']}:d{days_left}"
+            poll_id = hashlib.sha1(seed.encode()).hexdigest()[:8]
+            start_poll(bot, poll_id, answers,
+                       TEXT_BROADCAST_ALL_SESSIONS.format(date=w["date"]))
+        return body, buttons, poll_id
+    except Exception:
+        logger.exception("Опрос в напоминании не собрался — шлю без кнопок")
+        return text, None, None
+
+
 def _send_reminders(bot, today: datetime.date = None) -> int:
     if today is None:
         today = today_local()
@@ -2602,8 +2637,11 @@ def _send_reminders(bot, today: datetime.date = None) -> int:
         if note and note not in warned:
             notify_group(bot, note)
             warned.add(note)
+        text, buttons, poll_id = reminder_poll(bot, w, text, days_left)
         sent, failed, markup_error = broadcast(bot, text, recipients,
-                                               markup_fallback=True)
+                                               markup_fallback=True,
+                                               buttons=buttons,
+                                               poll_id=poll_id)
         if markup_error and "markup" not in warned:
             warn_markup(bot, markup_error)
             warned.add("markup")
@@ -2849,7 +2887,9 @@ def poll_question(message) -> str:
     text = (message.text or message.caption or "").strip()
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     last = lines[-1] if lines else ""
-    parts = [p for p in re.split(r"(?<=[.!?…])\s+", last) if p.strip()]
+    # Обрывок без единой буквы («👇» после вопроса) вопросом не считаем: иначе
+    # подпись ответа в группе — одно эмодзи
+    parts = [p for p in re.split(r"(?<=[.!?…])\s+", last) if re.search(r"\w", p)]
     question = parts[-1].strip() if parts else last
     if len(question) > POLL_QUESTION_MAX:
         tail = question[-(POLL_QUESTION_MAX - 1):]
