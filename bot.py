@@ -1153,6 +1153,14 @@ TEXT_GROUP_REMINDER_SENT = (
     "🔔 Отправлено напоминание про вебинар {date}.\n"
     "Доставлено: {sent}, не доставлено: {failed}."
 )
+# Добавляется к сообщению выше, когда у двух сеансов одного дня текст
+# напоминания одинаковый (в нём нет ни времени, ни названия, ни кнопки со
+# ссылкой): записанным на оба он уходит один раз. {people} — сколько человек
+# получили, {copies} — сколько сообщений ушло бы по сеансам по отдельности.
+TEXT_GROUP_REMINDER_ONCE = (
+    "ℹ️ Текст у этих сеансов одинаковый, поэтому записанные на оба получили "
+    "его один раз: {people} чел. вместо {copies} сообщений."
+)
 
 # В тексте напоминания ошибка в фигурных скобках. {error} — что бот не понял.
 TEXT_GROUP_REMINDER_TEMPLATE_BROKEN = (
@@ -2868,12 +2876,30 @@ def reminder_poll(bot, w, text: str, days_left: int):
         return text, None, None
 
 
+def reminder_label(items) -> str:
+    """Как назвать в группе напоминание: «19.10.2026 в 11:00 и 18:00 (через 3 дня)».
+
+    items — сеансы, которым ушло одно и то же сообщение; у одного дня общая
+    дата, а времена перечисляются.
+    """
+    labels = {}
+    for item in items:
+        w = item["w"]
+        labels.setdefault((w["date"], when_phrase(item["days_left"])),
+                          []).append(w["time"])
+    return "; ".join(f"{date} в {' и '.join(times)} ({when})"
+                     for (date, when), times in labels.items())
+
+
 def _send_reminders(bot, today: datetime.date = None) -> int:
     if today is None:
         today = today_local()
 
     total = 0
     warned = set()   # о какой поломке шаблона уже написали в группу
+    # Сначала выясняем, что и кому пора отправить, и только потом отправляем:
+    # два сеанса одного дня с одинаковым сообщением уходят одной рассылкой
+    due = []
     for w in WEBINARS:
         webinar_date = parse_date(w["date"])
         if webinar_date is None:
@@ -2912,26 +2938,50 @@ def _send_reminders(bot, today: datetime.date = None) -> int:
         if days_left in LINK_BUTTON_DAYS:
             buttons = (buttons or []) + [link_button(w)]
             warn_no_zoom(bot, w, warned)
-        sent, failed, markup_error = broadcast(bot, text, recipients,
+        due.append({"w": w, "key": key, "tag": tag, "days_left": days_left,
+                    "recipients": recipients, "text": text,
+                    "buttons": buttons, "poll_id": poll_id})
+
+    # Одно и то же сообщение — тот же текст, те же кнопки, тот же опрос — для
+    # двух сеансов одного дня шлём один раз: записанному на оба второй такой же
+    # текст ничего не даёт. Если в тексте есть время, название сеанса или своя
+    # кнопка со ссылкой, сообщения у сеансов разные и уходят каждое отдельно.
+    groups = {}
+    for item in due:
+        signature = (item["text"], tuple(item["buttons"] or ()), item["poll_id"])
+        groups.setdefault(signature, []).append(item)
+
+    for items in groups.values():
+        first = items[0]
+        recipients = set().union(*(item["recipients"] for item in items))
+        sent, failed, markup_error = broadcast(bot, first["text"], recipients,
                                                markup_fallback=True,
-                                               buttons=buttons,
-                                               poll_id=poll_id)
+                                               buttons=first["buttons"],
+                                               poll_id=first["poll_id"])
         if markup_error and "markup" not in warned:
             warn_markup(bot, markup_error)
             warned.add("markup")
         total += sent
 
-        logger.info("Напоминание про %s за %s дн.: доставлено %s, ошибок %s",
-                    key, days_left, sent, failed)
-        label = f"{w['date']} в {w['time']} ({when_phrase(days_left)})"
+        label = reminder_label(items)
+        logger.info("Напоминание про %s: доставлено %s, ошибок %s",
+                    ", ".join(item["key"] + "@" + item["tag"] for item in items),
+                    sent, failed)
         if not sent:
             # Не дошло ни до кого — не отмечаем, чтобы /check мог повторить.
-            report_not_sent(bot, sent_tag(key, tag), label, failed)
+            report_not_sent(bot, sent_tag(first["key"], first["tag"]), label,
+                            failed)
             continue
-        reminded_keys.add(sent_tag(key, tag))
+        for item in items:
+            reminded_keys.add(sent_tag(item["key"], item["tag"]))
         save_registry(bot)
-        notify_group(bot, TEXT_GROUP_REMINDER_SENT.format(
-            date=label, sent=sent, failed=failed))
+        report = TEXT_GROUP_REMINDER_SENT.format(
+            date=label, sent=sent, failed=failed)
+        copies = sum(len(item["recipients"]) for item in items)
+        if copies > len(recipients):
+            report += "\n" + TEXT_GROUP_REMINDER_ONCE.format(
+                people=len(recipients), copies=copies)
+        notify_group(bot, report)
     return total
 
 
