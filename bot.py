@@ -398,6 +398,12 @@ TEXT_LINK_SENT = (
     "🔗 {zoom}\n\n"
     "До встречи! 🙂"
 )
+# Записался, когда вебинар вот-вот начнётся или уже идёт, а ссылки ещё нет —
+# хотя в подтверждении обещано «ссылка следующим сообщением»
+TEXT_LINK_LATE_NOT_READY = (
+    "Ссылку на этот вебинар я пока не получил — как только она появится, её "
+    "можно будет взять командой /my. Извините за ожидание 🙏"
+)
 # Нажали, а ссылка в расписании ещё не заполнена
 TEXT_LINK_NOT_YET = (
     "Ссылка на этот вебинар пока не готова — пришлём её ближе к началу. "
@@ -1290,6 +1296,17 @@ TEXT_GROUP_NO_ZOOM_BUTTON = (
     "Кто нажмёт кнопку, получит «ссылка пока не готова». Заполните ссылку в "
     "расписании в " + LINK_WEBINARS + " — у утреннего и вечернего сеанса она "
     "своя, а кнопка заработает сама."
+)
+
+# Записался человек, когда вебинар вот-вот начнётся или уже идёт, а ссылка в
+# расписании не заполнена: прислать ему нечего. {webinar} — какой вебинар,
+# {field} — что заполнить. Один раз на вебинар.
+TEXT_GROUP_NO_ZOOM_LATE = (
+    "⚠️ На вебинар {webinar} записался человек, а поле {field} у него пустое — "
+    "прислать ему ссылку нечего.\n"
+    "Заполните ссылку в расписании в " + LINK_WEBINARS + " — у утреннего и "
+    "вечернего сеанса она своя. Кто записан, возьмёт её сам: в /my появится "
+    "кнопка «Ссылка»."
 )
 
 # Телеграм не понял HTML-разметку в тексте напоминания, и оно ушло тем же
@@ -2670,6 +2687,7 @@ def warn_markup(bot, error) -> None:
 # началом» проверяется каждые 5 минут — без этого группа получала бы по
 # сообщению на каждую неудачную попытку.
 _reported_not_sent = set()
+_reported_late_no_zoom = set()   # вебинары, про пустую ссылку которых группе уже сказали
 
 
 def report_not_sent(bot, tag: str, label: str, failed: int) -> None:
@@ -2880,7 +2898,23 @@ def link_callback(update: Update, context: CallbackContext) -> None:
 
 def send_link_now(bot, w, user_id: int, job_queue=None) -> bool:
     """Записавшемуся поздно — ссылка сразу, лично, без лишнего нажатия: он
-    только что сам записался, и это считается за «пойду»."""
+    только что сам записался, и это считается за «пойду».
+
+    Ссылки в расписании нет — обещанное «следующим сообщением» прислать
+    нечего: человеку говорим, как взять её потом, а группе — что заполнить.
+    """
+    if not (w.get("zoom") or "").strip():
+        try:
+            bot.send_message(chat_id=user_id, text=TEXT_LINK_LATE_NOT_READY,
+                             disable_web_page_preview=True)
+        except TelegramError as e:
+            logger.warning("Не удалось сказать, что ссылки пока нет: %s", e)
+        key = webinar_key(w)
+        if key not in _reported_late_no_zoom:
+            _reported_late_no_zoom.add(key)
+            notify_group(bot, TEXT_GROUP_NO_ZOOM_LATE.format(
+                webinar=html.escape(key_label(key)), field="\"zoom\""))
+        return False
     if not deliver_link(bot, w, user_id):
         return False
     note_link_request(webinar_key(w), user_id, job_queue)
