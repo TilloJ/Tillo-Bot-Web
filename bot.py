@@ -200,29 +200,29 @@ LATE_REGISTRATION_MINUTES = 120
 # сообщение в группу, поэтому всех нажавших бот записывает за один раз.
 LINK_SAVE_DELAY = 20
 
-# Календарь. Включён ли он: True — под сообщением с подробностями после записи,
-# в /my и (по CALENDAR_BUTTON_DAYS) под напоминаниями есть кнопка «📅 В календарь»;
-# False — кнопок нет нигде (уже отправленные кнопки продолжают работать). 18.10
-# выключили, чтобы люди не путались между календарём и кнопкой со ссылкой.
-CALENDAR_ENABLED = False
+# Календарь БЕЗ ссылки в событии. True — кнопка «📅 В календарь» есть: под
+# сообщением с подробностями после записи; в /my — у каждого вебинара, пока человек
+# не взял на него ссылку (после этого у него календарь со ссылкой, под сообщением
+# со ссылкой); под каждым напоминанием, у которого нет кнопки со ссылкой (за 5, 3
+# и 2 дня). Под напоминанием с кнопкой «ИДУ НА ВЕБИНАР» календаря нет — он придёт
+# под самой ссылкой. False — этих кнопок нет нигде (уже отправленные продолжают
+# работать). 18.10 Сергей выключил календарь и в тот же день вернул его в таком виде.
+CALENDAR_ENABLED = True
+# Календарь под сообщением со ссылкой: человек нажал кнопку со ссылкой, получил
+# ссылку — и под ней кнопка «📅 Добавить в календарь». Ссылка на вход стоит в
+# событии ЛЮБОЙ календарной кнопки, но только у того, кто её уже запрашивал и
+# записан на этот сеанс: календарь счёт «кто взял ссылку» не обходит. Не зависит
+# от CALENDAR_ENABLED. False — без кнопки под ссылкой.
+CALENDAR_UNDER_LINK = True
 # Кнопка «📅 В календарь» присылает файл, который открывается в календаре
-# телефона. Ссылки на вход в событии нет — её человеку присылает бот по кнопке
-# кнопке со ссылкой: календарь уходит раньше, чем ссылка известна, и счёт тех,
+# телефона. В календаре без ссылки её нет — человеку её присылает бот по кнопке
+# со ссылкой: такой календарь уходит раньше, чем ссылка известна, и счёт тех,
 # кто за ней пришёл, не должен обходиться стороной.
 # Сколько минут длится вебинар в календаре:
 WEBINAR_LENGTH_MINUTES = 90
 # За сколько минут до начала календарь напомнит о вебинаре (60 — за час).
 # 0 — без напоминания.
 CALENDAR_ALARM_MINUTES = 60
-# В какие напоминания «за N дней» добавлять кнопку «📅 В календарь» — отдельной
-# кнопкой под сообщением, после кнопки со ссылкой. Нужна тем, кто записался
-# раньше, чем появился календарь: сообщения с подробностями и кнопкой они не
-# получали. Ставьте только дни, у которых свой текст на каждый сеанс (в нём есть
-# {time} или {title}): у общего для двух сеансов текста (за 5 и 3 дня) кнопка
-# получилась бы у сеансов разной, и записанные на оба снова получили бы по два
-# сообщения. Пустой список [] — без кнопки в напоминаниях. Работает только при
-# CALENDAR_ENABLED = True.
-CALENDAR_BUTTON_DAYS = [2, 1]
 
 # По скольким последним опросам бот ведёт счёт ответов. Счёт хранится в
 # закреплённом сообщении, поэтому много не надо: по старому опросу ответ всё
@@ -467,6 +467,18 @@ TEXT_CALENDAR_DESCRIPTION = (
     "команде /my."
 )
 TEXT_CALENDAR_LOCATION = "Онлайн (Zoom)"
+# То же, когда в событии есть ссылка (кнопка под сообщением со ссылкой): место
+# события — сама ссылка, {zoom} бот подставит.
+TEXT_CALENDAR_DESCRIPTION_LINK = (
+    "Ссылка на вход: {zoom}\n"
+    "Потерялась — возьмите её в боте @Tillojournal_bot командой /my."
+)
+# Подпись к файлу, в котором ссылка уже есть (разметки в ней нет)
+TEXT_CALENDAR_SENT_LINK = (
+    "Откройте файл — вебинар добавится в календарь телефона, а ссылка на вход "
+    "будет прямо в событии.\n\n"
+    "Не открывается? Кнопка ниже — для Google Календаря."
+)
 # Текст напоминания календаря (за CALENDAR_ALARM_MINUTES минут до начала)
 TEXT_CALENDAR_ALARM = "Вебинар Tillo скоро начнётся"
 
@@ -2845,9 +2857,29 @@ def link_button(w):
     return (TEXT_LINK_BUTTON, f"{CALLBACK_PREFIX}lk:{webinar_key(w)}")
 
 
-def calendar_reminder_button(w):
-    """Кнопка «📅 В календарь» под напоминанием про вебинар w (CALENDAR_BUTTON_DAYS)."""
-    return (TEXT_CALENDAR_BUTTON, f"{CALLBACK_PREFIX}cal:{webinar_key(w)}")
+def reminder_calendar_buttons(items):
+    """Кнопки «📅 В календарь» под напоминанием, у которого нет кнопки со ссылкой
+    (за 5, 3 и 2 дня). У «за день» и «скоро» календаря нет: там кнопка со
+    ссылкой, а календарь со ссылкой приходит уже под самой ссылкой.
+
+    items — сеансы одной рассылки. Сеансы с одним и тем же сообщением идут одной
+    рассылкой, поэтому кнопки у неё общие: по одной на каждый сеанс, с датой и
+    временем на надписи; сеанс один — одна кнопка с общей надписью. Так
+    записанный на оба сеанса по-прежнему получает одно сообщение.
+    """
+    if not CALENDAR_ENABLED or items[0]["days_left"] in LINK_BUTTON_DAYS:
+        return []
+    ws = [item["w"] for item in items if calendar_times(item["w"])]
+    pairs = []
+    for w in ws:
+        label = TEXT_CALENDAR_BUTTON
+        if len(ws) > 1:
+            try:
+                label = TEXT_MY_CALENDAR_BUTTON.format(date=w["date"], time=w["time"])
+            except (KeyError, IndexError, ValueError):
+                logger.exception("Надпись кнопки календаря в напоминании не собралась")
+        pairs.append((label, f"{CALLBACK_PREFIX}cal:{webinar_key(w)}"))
+    return pairs
 
 
 def warn_no_zoom(bot, w, warned) -> None:
@@ -2866,21 +2898,39 @@ def warn_no_zoom(bot, w, warned) -> None:
         warned.add(note)
 
 
+def link_calendar_markup(w):
+    """Кнопка «В календарь» под сообщением со ссылкой — или None, если не нужна."""
+    if CALENDAR_UNDER_LINK and calendar_times(w) and webinar_is_ahead(w, as_moment()):
+        return InlineKeyboardMarkup([[InlineKeyboardButton(
+            TEXT_CALENDAR_BUTTON, callback_data=f"cal:{webinar_key(w)}")]])
+    return None
+
+
 def deliver_link(bot, w, user_id: int) -> bool:
     """Присылает человеку ссылку на этот сеанс лично. True — сообщение ушло."""
     zoom = (w.get("zoom") or "").strip()
     if not zoom:
         return False
-    try:
-        with_retry(lambda: bot.send_message(
-            chat_id=user_id, parse_mode='HTML', disable_web_page_preview=True,
-            text=TEXT_LINK_SENT.format(
-                date=w["date"], time=w["time"], title=clean_title(w),
-                zoom=html.escape(zoom, quote=False))))
-    except TelegramError as e:
-        logger.warning("Не удалось прислать ссылку %s: %s", user_id, e)
-        return False
-    return True
+    text = TEXT_LINK_SENT.format(
+        date=w["date"], time=w["time"], title=clean_title(w),
+        zoom=html.escape(zoom, quote=False))
+    # Под ссылкой — «📅 Добавить в календарь» (событие со ссылкой), пока вебинар
+    # не начался. Не приняли кнопку (BadRequest) — ссылка уходит без неё: она важнее.
+    markup = link_calendar_markup(w)
+    for reply_markup in ((markup, None) if markup else (None,)):
+        try:
+            with_retry(lambda: bot.send_message(
+                chat_id=user_id, parse_mode='HTML', disable_web_page_preview=True,
+                text=text, reply_markup=reply_markup))
+            return True
+        except BadRequest as e:
+            logger.warning("Ссылка %s не ушла с кнопкой календаря: %s", user_id, e)
+            if reply_markup is None:
+                return False
+        except TelegramError as e:
+            logger.warning("Не удалось прислать ссылку %s: %s", user_id, e)
+            return False
+    return False
 
 
 def note_link_request(key: str, user_id: int, job_queue=None) -> bool:
@@ -3044,13 +3094,25 @@ def calendar_filename(w) -> str:
     return "tillo-" + webinar_key(w).replace(".", "-") + ".ics"
 
 
-def webinar_ics(w, now: datetime.datetime = None) -> bytes:
+def calendar_description_location(w, with_link: bool):
+    """(описание, место) события. Со ссылкой — только если она есть в расписании."""
+    if with_link:
+        zoom = (w.get("zoom") or "").strip()
+        if not zoom:
+            raise ValueError(f"у вебинара {webinar_key(w)} нет ссылки для календаря")
+        return TEXT_CALENDAR_DESCRIPTION_LINK.format(zoom=zoom), zoom
+    return TEXT_CALENDAR_DESCRIPTION, TEXT_CALENDAR_LOCATION
+
+
+def webinar_ics(w, now: datetime.datetime = None, with_link: bool = False) -> bytes:
     """Файл календаря (.ics) с одним событием — этим вебинаром.
 
-    Ссылки на вход в нём нет, и это не случайность: календарь уходит раньше,
-    чем ссылка известна, а ссылку присылает бот по кнопке и считает, кто её
-    взял (см. настройки наверху файла).
+    По умолчанию ссылки на вход в нём нет, и это не случайность: календарь
+    уходит раньше, чем ссылка известна, а ссылку присылает бот по кнопке и
+    считает, кто её взял. Со ссылкой (with_link) файл отдаём только под
+    сообщением со ссылкой — тому, кто её уже взял и учтён.
     """
+    description, location = calendar_description_location(w, with_link)
     times = calendar_times(w)
     if times is None:
         raise ValueError(f"не разобрано время вебинара {webinar_key(w)}")
@@ -3071,8 +3133,12 @@ def webinar_ics(w, now: datetime.datetime = None) -> bytes:
         f"DTSTART:{start.strftime(moment)}",
         f"DTEND:{end.strftime(moment)}",
         "SUMMARY:" + ics_escape(calendar_summary(w)),
-        "DESCRIPTION:" + ics_escape(TEXT_CALENDAR_DESCRIPTION),
-        "LOCATION:" + ics_escape(TEXT_CALENDAR_LOCATION),
+        "DESCRIPTION:" + ics_escape(description),
+        "LOCATION:" + ics_escape(location),
+    ]
+    if with_link:
+        lines.append("URL:" + location)          # адрес — не текст, без экранирования
+    lines += [
         "STATUS:CONFIRMED",
         "TRANSP:OPAQUE",
     ]
@@ -3088,18 +3154,19 @@ def webinar_ics(w, now: datetime.datetime = None) -> bytes:
     return ("\r\n".join(ics_fold(line) for line in lines) + "\r\n").encode("utf-8")
 
 
-def google_calendar_url(w) -> str:
+def google_calendar_url(w, with_link: bool = False) -> str:
     """Ссылка «добавить в Google Календарь» с заполненным событием — для тех,
     у кого файл .ics не открывается. Напоминание в такую ссылку не передать:
     его ставит сам календарь человека."""
     start, end = calendar_times(w)
     moment = "%Y%m%dT%H%M%SZ"
+    description, location = calendar_description_location(w, with_link)
     fields = {
         "action": "TEMPLATE",
         "text": calendar_summary(w),
         "dates": f"{start.strftime(moment)}/{end.strftime(moment)}",
-        "details": TEXT_CALENDAR_DESCRIPTION,
-        "location": TEXT_CALENDAR_LOCATION,
+        "details": description,
+        "location": location,
     }
     base = "https://calendar.google.com/calendar/render?"
     url = base + urllib.parse.urlencode(fields, quote_via=urllib.parse.quote)
@@ -3115,11 +3182,37 @@ def calendar_button(w, label: str = None):
                                 callback_data=f"cal:{webinar_key(w)}")
 
 
-def calendar_callback(update: Update, context: CallbackContext) -> None:
-    """«📅 В календарь»: файл .ics с этим вебинаром — лично тому, кто нажал.
+def send_calendar(context, user, w, with_link: bool, say) -> bool:
+    """Отправляет человеку файл .ics и кнопку для Google Календаря. True — ушло."""
+    try:
+        data = webinar_ics(w, with_link=with_link)
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(
+            TEXT_CALENDAR_GOOGLE_BUTTON,
+            url=google_calendar_url(w, with_link=with_link))]])
+        caption = TEXT_CALENDAR_SENT_LINK if with_link else TEXT_CALENDAR_SENT
+        # Файл — заново на каждую попытку: после неудачной поток уже прочитан
+        with_retry(lambda: context.bot.send_document(
+            chat_id=user.id, document=io.BytesIO(data),
+            filename=calendar_filename(w), caption=caption,
+            reply_markup=markup))
+        return True
+    except Exception:
+        # И сбой Телеграма, и опечатка в тексте события: человек не должен
+        # остаться без ответа
+        logger.exception("Не получилось отправить календарь %s",
+                         webinar_key(w))
+        say(TEXT_CALENDAR_FAILED)
+        return False
 
-    Записан ли он на вебинар, не проверяем: в файле только название, дата и
-    время, а сообщение с кнопкой могли переслать — пусть и друг добавит себе.
+
+def calendar_callback(update: Update, context: CallbackContext) -> None:
+    """«📅 В календарь» (cal:<сеанс>): файл .ics с этим вебинаром — лично тому, кто нажал.
+
+    Ссылка на вход стоит в событии только у того, кто её уже запрашивал (кнопкой
+    со ссылкой) и записан на этот сеанс; у всех остальных событие без ссылки.
+    Так календарь сам ссылку не выдаёт: счёт «кто взял ссылку» он не обходит и
+    не меняет. Файл без ссылки получит и тот, кому сообщение переслали, — в нём
+    только название, дата и время.
     """
     query = update.callback_query
     answer_tap(query)
@@ -3138,20 +3231,9 @@ def calendar_callback(update: Update, context: CallbackContext) -> None:
     if w is None or not webinar_is_ahead(w, as_moment()):
         say(TEXT_CALENDAR_OVER)
         return
-    try:
-        data = webinar_ics(w)
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton(
-            TEXT_CALENDAR_GOOGLE_BUTTON, url=google_calendar_url(w))]])
-        # Файл — заново на каждую попытку: после неудачной поток уже прочитан
-        with_retry(lambda: context.bot.send_document(
-            chat_id=user.id, document=io.BytesIO(data),
-            filename=calendar_filename(w), caption=TEXT_CALENDAR_SENT,
-            reply_markup=markup))
-    except Exception:
-        # И сбой Телеграма, и опечатка в тексте события: человек не должен
-        # остаться без ответа
-        logger.exception("Не получилось отправить календарь %s", key)
-        say(TEXT_CALENDAR_FAILED)
+    with_link = ((key, user.id) in link_asked and user.id in registered_for(key)
+                 and bool((w.get("zoom") or "").strip()))
+    send_calendar(context, user, w, with_link, say)
 
 
 def send_reminders(bot, today: datetime.date = None) -> int:
@@ -3252,8 +3334,6 @@ def _send_reminders(bot, today: datetime.date = None) -> int:
         if days_left in LINK_BUTTON_DAYS:
             buttons = (buttons or []) + [link_button(w)]
             warn_no_zoom(bot, w, warned)
-        if CALENDAR_ENABLED and days_left in CALENDAR_BUTTON_DAYS and calendar_times(w):
-            buttons = (buttons or []) + [calendar_reminder_button(w)]
         due.append({"w": w, "key": key, "tag": tag, "days_left": days_left,
                     "recipients": recipients, "text": text,
                     "buttons": buttons, "poll_id": poll_id})
@@ -3270,9 +3350,11 @@ def _send_reminders(bot, today: datetime.date = None) -> int:
     for items in groups.values():
         first = items[0]
         recipients = set().union(*(item["recipients"] for item in items))
+        # Календарь — к уже склеенной рассылке: на склейку он не влияет
+        buttons = (first["buttons"] or []) + reminder_calendar_buttons(items)
         sent, failed, markup_error = broadcast(bot, first["text"], recipients,
                                                markup_fallback=True,
-                                               buttons=first["buttons"],
+                                               buttons=buttons or None,
                                                poll_id=first["poll_id"])
         if markup_error and "markup" not in warned:
             warn_markup(bot, markup_error)
@@ -3749,8 +3831,10 @@ def my_command(update: Update, context: CallbackContext) -> None:
                 callback_data=f"lk:{webinar_key(w)}")])
         if webinar_is_ahead(w, now):
             # После начала вебинар уже не добавить в календарь, а запись не
-            # отменить. Опечатка в надписи календаря не должна ломать /my.
-            if CALENDAR_ENABLED:
+            # отменить. Календарь без ссылки — пока человек не взял ссылку: после
+            # этого у него календарь со ссылкой, под сообщением со ссылкой.
+            # Опечатка в надписи календаря не должна ломать /my.
+            if CALENDAR_ENABLED and (webinar_key(w), user_id) not in link_asked:
                 try:
                     keyboard.append([calendar_button(w, TEXT_MY_CALENDAR_BUTTON.format(
                         date=w["date"], time=w["time"]))])
