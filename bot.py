@@ -200,8 +200,12 @@ LATE_REGISTRATION_MINUTES = 120
 # сообщение в группу, поэтому всех нажавших бот записывает за один раз.
 LINK_SAVE_DELAY = 20
 
-# Календарь. Под сообщением с подробностями после записи и в /my есть кнопка
-# «📅 В календарь»: она присылает файл, который открывается в календаре
+# Календарь. Включён ли он: True — под сообщением с подробностями после записи,
+# в /my и (по CALENDAR_BUTTON_DAYS) под напоминаниями есть кнопка «📅 В календарь»;
+# False — кнопок нет нигде (уже отправленные кнопки продолжают работать). 18.10
+# выключили, чтобы люди не путались между календарём и кнопкой со ссылкой.
+CALENDAR_ENABLED = False
+# Кнопка «📅 В календарь» присылает файл, который открывается в календаре
 # телефона. Ссылки на вход в событии нет — её человеку присылает бот по кнопке
 # «Пойду, дайте ссылку»: календарь уходит раньше, чем ссылка известна, и счёт
 # тех, кто за ней пришёл, не должен обходиться стороной.
@@ -210,6 +214,15 @@ WEBINAR_LENGTH_MINUTES = 90
 # За сколько минут до начала календарь напомнит о вебинаре (60 — за час).
 # 0 — без напоминания.
 CALENDAR_ALARM_MINUTES = 60
+# В какие напоминания «за N дней» добавлять кнопку «📅 В календарь» — отдельной
+# кнопкой под сообщением, после «Пойду, дайте ссылку». Нужна тем, кто записался
+# раньше, чем появился календарь: сообщения с подробностями и кнопкой они не
+# получали. Ставьте только дни, у которых свой текст на каждый сеанс (в нём есть
+# {time} или {title}): у общего для двух сеансов текста (за 5 и 3 дня) кнопка
+# получилась бы у сеансов разной, и записанные на оба снова получили бы по два
+# сообщения. Пустой список [] — без кнопки в напоминаниях. Работает только при
+# CALENDAR_ENABLED = True.
+CALENDAR_BUTTON_DAYS = [2, 1]
 
 # По скольким последним опросам бот ведёт счёт ответов. Счёт хранится в
 # закреплённом сообщении, поэтому много не надо: по старому опросу ответ всё
@@ -310,7 +323,10 @@ TEXT_REGISTER_DETAILS = (
 TEXT_REGISTER_DETAILS_TAIL = (
     "Напомню заранее — за несколько дней и ещё раз перед самым началом. "
     "В напоминаниях за день и перед началом будет кнопка: нажмёте — и ссылка "
-    "на вход придёт вам сюда. Взять её можно и в любой момент командой /my.\n\n"
+    "на вход придёт вам сюда. Взять её можно и в любой момент командой /my."
+)
+# Добавляется в конец, только когда календарь включён (CALENDAR_ENABLED)
+TEXT_REGISTER_DETAILS_CALENDAR = (
     "Чтобы не забыть, добавьте вебинар в календарь — кнопкой ниже или из /my."
 )
 
@@ -2779,6 +2795,11 @@ def link_button(w):
     return (TEXT_LINK_BUTTON, f"{CALLBACK_PREFIX}lk:{webinar_key(w)}")
 
 
+def calendar_reminder_button(w):
+    """Кнопка «📅 В календарь» под напоминанием про вебинар w (CALENDAR_BUTTON_DAYS)."""
+    return (TEXT_CALENDAR_BUTTON, f"{CALLBACK_PREFIX}cal:{webinar_key(w)}")
+
+
 def warn_no_zoom(bot, w, warned) -> None:
     """Напоминание уходит с кнопкой «ссылка», а ссылки в расписании нет.
 
@@ -3181,6 +3202,8 @@ def _send_reminders(bot, today: datetime.date = None) -> int:
         if days_left in LINK_BUTTON_DAYS:
             buttons = (buttons or []) + [link_button(w)]
             warn_no_zoom(bot, w, warned)
+        if CALENDAR_ENABLED and days_left in CALENDAR_BUTTON_DAYS and calendar_times(w):
+            buttons = (buttons or []) + [calendar_reminder_button(w)]
         due.append({"w": w, "key": key, "tag": tag, "days_left": days_left,
                     "recipients": recipients, "text": text,
                     "buttons": buttons, "poll_id": poll_id})
@@ -3615,10 +3638,12 @@ def register_callback(update: Update, context: CallbackContext) -> None:
         part for part in (TEXT_REGISTER_DETAILS.format(
             date=w["date"], time=w["time"], title=clean_title(w),
             about=(w.get("about") or "").strip()).strip(),
-            TEXT_REGISTER_DETAILS_TAIL) if part)
+            TEXT_REGISTER_DETAILS_TAIL,
+            TEXT_REGISTER_DETAILS_CALENDAR if CALENDAR_ENABLED else "") if part)
     # Под сообщением — кнопка «В календарь». Не приняли её (BadRequest) — те же
     # подробности уходят без кнопки: они важнее.
-    for markup in (InlineKeyboardMarkup([[calendar_button(w)]]), None):
+    for markup in ((InlineKeyboardMarkup([[calendar_button(w)]]), None)
+                   if CALENDAR_ENABLED else (None,)):
         try:
             context.bot.send_message(chat_id=user.id, text=details,
                                      parse_mode='HTML',
@@ -3675,11 +3700,12 @@ def my_command(update: Update, context: CallbackContext) -> None:
         if webinar_is_ahead(w, now):
             # После начала вебинар уже не добавить в календарь, а запись не
             # отменить. Опечатка в надписи календаря не должна ломать /my.
-            try:
-                keyboard.append([calendar_button(w, TEXT_MY_CALENDAR_BUTTON.format(
-                    date=w["date"], time=w["time"]))])
-            except (KeyError, IndexError, ValueError):
-                logger.exception("Кнопка календаря в /my не собралась")
+            if CALENDAR_ENABLED:
+                try:
+                    keyboard.append([calendar_button(w, TEXT_MY_CALENDAR_BUTTON.format(
+                        date=w["date"], time=w["time"]))])
+                except (KeyError, IndexError, ValueError):
+                    logger.exception("Кнопка календаря в /my не собралась")
             keyboard.append([InlineKeyboardButton(
                 TEXT_MY_CANCEL_BUTTON.format(date=w["date"], time=w["time"]),
                 callback_data=f"cx:{webinar_key(w)}")])
