@@ -5031,6 +5031,43 @@ def _patched_app_init(self, webhook_path, bot, update_queue):
 _webhookhandler.WebhookAppClass.__init__ = _patched_app_init
 
 
+# Команда — это «/слово» или «/слово@бот» в самом начале текста сообщения; слово
+# — из латинских букв, цифр и «_», как у Телеграма.
+_COMMAND_START = re.compile(r"/([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?")
+
+
+class AnyCommandHandler(CommandHandler):
+    """CommandHandler, который находит команду по тексту, а не по списку разметки.
+
+    Телеграм присылает разметку списком, и обычный CommandHandler считает
+    сообщение командой, только если команда стоит в этом списке ПЕРВОЙ. Встала
+    перед ней другая отметка — так бывает у вставленного, скопированного или
+    оформленного текста — Телеграм Desktop при копировании превращает «/broadcast»
+    в ссылку tg://bot_command?command=broadcast — и команда молча пропадает: ни
+    ответа, ни строчки в логе. 19.10 так не ушли четыре рассылки со ссылкой на
+    зум, за десять минут до вебинара. Здесь команда — то, с чего начинается
+    текст: разметка не важна.
+    """
+
+    def check_update(self, update):
+        if not (isinstance(update, Update) and update.effective_message):
+            return None
+        message = update.effective_message
+        if not (message.text and message.bot):
+            return None
+        found = _COMMAND_START.match(message.text)
+        if not found:
+            return None
+        name, target = found.group(1).lower(), (found.group(2) or "").lower()
+        if name not in self.command or (
+                target and target != message.bot.username.lower()):
+            return None          # другая команда или команда для другого бота
+        filter_result = self.filters(update)
+        if filter_result:
+            return message.text.split()[1:], filter_result
+        return False
+
+
 def main() -> None:
     token = os.environ.get("BOT_TOKEN")
     if not token:
@@ -5039,24 +5076,24 @@ def main() -> None:
     updater = Updater(token, use_context=True)
     dispatcher = updater.dispatcher
 
-    dispatcher.add_handler(CommandHandler('start', start))
-    dispatcher.add_handler(CommandHandler('register', register))
-    dispatcher.add_handler(CommandHandler('my', my_command))
+    dispatcher.add_handler(AnyCommandHandler('start', start))
+    dispatcher.add_handler(AnyCommandHandler('register', register))
+    dispatcher.add_handler(AnyCommandHandler('my', my_command))
     # «/link» остаётся: он написан в старых сообщениях у людей
-    dispatcher.add_handler(CommandHandler('link', my_command))
-    dispatcher.add_handler(CommandHandler('questions', questions))
-    dispatcher.add_handler(CommandHandler('help', help_command))
-    dispatcher.add_handler(CommandHandler('courses', courses))
+    dispatcher.add_handler(AnyCommandHandler('link', my_command))
+    dispatcher.add_handler(AnyCommandHandler('questions', questions))
+    dispatcher.add_handler(AnyCommandHandler('help', help_command))
+    dispatcher.add_handler(AnyCommandHandler('courses', courses))
     for page in INFO_PAGES:
-        dispatcher.add_handler(CommandHandler(page["command"],
-                                              info_page_handler(page)))
-    dispatcher.add_handler(CommandHandler('id', chat_id_command))
-    dispatcher.add_handler(CommandHandler('stats', stats_command))
-    dispatcher.add_handler(CommandHandler('health', health_command))
-    dispatcher.add_handler(CommandHandler('broadcast', broadcast_command))
-    dispatcher.add_handler(CommandHandler('check', check_command))
-    dispatcher.add_handler(CommandHandler('dm', dm_command))
-    dispatcher.add_handler(CommandHandler('who', who_command))
+        dispatcher.add_handler(AnyCommandHandler(page["command"],
+                                                 info_page_handler(page)))
+    dispatcher.add_handler(AnyCommandHandler('id', chat_id_command))
+    dispatcher.add_handler(AnyCommandHandler('stats', stats_command))
+    dispatcher.add_handler(AnyCommandHandler('health', health_command))
+    dispatcher.add_handler(AnyCommandHandler('broadcast', broadcast_command))
+    dispatcher.add_handler(AnyCommandHandler('check', check_command))
+    dispatcher.add_handler(AnyCommandHandler('dm', dm_command))
+    dispatcher.add_handler(AnyCommandHandler('who', who_command))
     dispatcher.add_handler(CallbackQueryHandler(register_callback, pattern=r'^reg:'))
     dispatcher.add_handler(CallbackQueryHandler(poll_callback, pattern=r'^pv:'))
     dispatcher.add_handler(CallbackQueryHandler(link_callback, pattern=r'^lk:'))
