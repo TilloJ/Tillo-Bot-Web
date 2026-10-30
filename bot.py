@@ -1271,6 +1271,7 @@ TEXT_HEALTH = (
     "<i>Служебные подробности для разработчика. Для работы с вебинарами "
     "хватает /stats.</i>\n\n"
     "Бот запущен: {started}.\n"
+    "Версия кода: {version}.\n"
     "Список записавшихся прочитан: {loaded}\n"
     "Альбомов в памяти (для рассылки): {albums}.\n\n"
     "{soon_job}\n\n"
@@ -1278,6 +1279,9 @@ TEXT_HEALTH = (
     "{wake}\n\n"
     "Пояса: напоминания — {tz}, время вебинаров — {wtz}."
 )
+# Версия — первые 7 знаков коммита, который сейчас запущен (его сообщает
+# Render); на GitHub это тот же номер, что в списке изменений файла.
+TEXT_HEALTH_VERSION_UNKNOWN = "неизвестна (бот запущен не на Render)"
 TEXT_HEALTH_LOADED_YES = "да, {people} чел. / {records}."
 TEXT_HEALTH_LOADED_NO = (
     "⚠️ НЕТ. Пока это так, регистрации не сохраняются и напоминания не уходят."
@@ -1660,6 +1664,10 @@ LINK_FLUSH_RETRIES = 5       # столько раз повторяем неуд
 # Когда этот процесс запустился — /health показывает это, чтобы было видно,
 # что сервис недавно перезапускался (на бесплатном тарифе это норма).
 STARTED_AT = now_local()
+# Какой коммит запущен: Render кладёт его в RENDER_GIT_COMMIT. /health и
+# строка в логе при старте показывают первые 7 знаков — так после выкладки
+# видно, что работает именно новый код.
+RUNNING_COMMIT = os.environ.get("RENDER_GIT_COMMIT", "")[:7]
 # Кто заблокировал бота: писать им бесполезно, Телеграм откажет. Из списка
 # их НЕ убираем — человек остаётся в файле с пометкой и в «Всего», просто
 # рассылки его пропускают. Разблокирует и запишется снова — пометка снимется.
@@ -4253,6 +4261,7 @@ def health_command(update: Update, context: CallbackContext) -> None:
     update.message.reply_text(
         TEXT_HEALTH.format(
             started=STARTED_AT.strftime("%d.%m.%Y в %H:%M ") + TIMEZONE_LABEL,
+            version=RUNNING_COMMIT or TEXT_HEALTH_VERSION_UNKNOWN,
             loaded=loaded, soon_job=soon_job, albums=len(_albums),
             wake=(TEXT_HEALTH_WAKE.format(times=", ".join(times),
                                           tz=TIMEZONE_LABEL)
@@ -5162,7 +5171,8 @@ def main() -> None:
             url_path=token,
             webhook_url=f"{external_url}/{token}",
         )
-        logger.info("Бот запущен через вебхук: %s", external_url)
+        logger.info("Бот запущен через вебхук: %s, версия %s", external_url,
+                    RUNNING_COMMIT or "неизвестна")
     else:
         updater.start_polling()
         logger.info("Бот запущен через polling")
