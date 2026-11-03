@@ -902,6 +902,10 @@ TEXT_BROADCAST_USAGE = (
     "Только дата, без времени и без слова «все», сработает, лишь если в этот "
     "день один вебинар. Если их несколько, бот ничего не отправит, а "
     "подскажет готовые строки на выбор.\n\n"
+    "<b>/broadcast список</b> Привет! …\n"
+    "— ответом (reply) на таблицу Excel, выложенную сюда: только тем, кто в ней "
+    "есть. В первом столбце — ники в Телеграме или номера (id), по одному в "
+    "строке; подойдёт копия registry.xlsx с нужными строками.\n\n"
     "<b>Кнопки под сообщением</b>: <u>отдельной строкой</u> — ссылка со "
     "словами, и больше в строке ничего. Хоть так:\n"
     "<code>[Оплатить 1000 ₽](https://pay.cloudtips.ru/p/xxxxx)</code>\n"
@@ -960,7 +964,7 @@ TEXT_BROADCAST_DONE = "Готово. Доставлено: {sent}. Не дост
 TEXT_BROADCAST_EVERYONE = "всем записавшимся"
 TEXT_BROADCAST_CONFIRM = (
     "👆 Так это увидят люди — всё, что выше.\n"
-    "Кому: {label} — получателей: {count}.\n"
+    "Кому: {label} — получателей: {count}.{note}\n"
     "Отправить?"
 )
 TEXT_BROADCAST_BTN_YES = "✅ Отправить"
@@ -1028,6 +1032,62 @@ TEXT_BROADCAST_FILE_FROM_BOT = (
 TEXT_BROADCAST_FILE_GROUP = (
     "Несколько файлов в одном сообщении бот не разошлёт. Выложите нужный "
     "отдельно и ответьте командой на него. Ничего не отправлено."
+)
+
+# --- Рассылка по своему списку: «/broadcast список текст» ------------------
+# Ответом (reply) на таблицу Excel (.xlsx), выложенную сюда, — разослать только
+# тем, кто в ней есть. Бот читает только первый столбец, на всех листах: в
+# каждой строке — ник в Телеграме (с @ или без, можно ссылкой t.me/…) или номер
+# человека (id), как в registry.xlsx. Найти он может только тех, кто когда-либо
+# записывался на вебинар. Само слово, которое пишется сразу после /broadcast:
+TEXT_BROADCAST_LIST_WORD = "список"
+# Кому — так видно в вопросе «Отправить?» и в отчёте. {name} — имя файла
+TEXT_BROADCAST_LIST_LABEL = "по списку из файла «{name}»"
+# Строки под вопросом «Отправить?». {rows} — сколько строк в файле,
+# {found} — сколько людей нашлось
+TEXT_BROADCAST_LIST_FOUND = (
+    "\nВ файле строк: {rows}. Нашлось среди записавшихся: {found} чел."
+)
+# Если в файле несколько листов. {sheets} — «Записи» — 12, «Архив» — 3
+TEXT_BROADCAST_LIST_SHEETS = "\nПо листам: {sheets}."
+# {count} — сколько не нашлось, {who} — какие строки
+TEXT_BROADCAST_LIST_MISSING = (
+    "\n⚠️ Не нашлись среди записавшихся, им не уйдёт ({count}): {who}"
+)
+TEXT_BROADCAST_LIST_BLOCKED = "\nЗаблокировали бота, им не уйдёт: {count} чел."
+# «/broadcast список …», но не ответом на таблицу
+TEXT_BROADCAST_LIST_NO_FILE = (
+    "Чтобы разослать по своему списку, выложите сюда таблицу Excel (.xlsx) и "
+    "ответьте на неё (reply) командой:\n"
+    "<code>/broadcast список Привет! …</code>\n\n"
+    "В первом столбце таблицы — ники в Телеграме (с @ или без) или номера "
+    "людей (id), по одному в строке. Подойдёт и копия <b>registry.xlsx</b>, в "
+    "которой оставлены только нужные строки.\n\n"
+    "Если вы просто хотели начать текст со слова «список» — начните с другого "
+    "слова. Ничего не отправлено."
+)
+# Ответ «/broadcast список» на файл самого бота — в нём все
+TEXT_BROADCAST_LIST_FROM_BOT = (
+    "Это сам список записавшихся от бота — в нём все. Скачайте его, оставьте "
+    "только нужные строки, сохраните под другим именем, выложите сюда и "
+    "ответьте командой на свою копию. Ничего не отправлено."
+)
+TEXT_BROADCAST_LIST_UNREADABLE = (
+    "Не получилось прочитать таблицу — нужен файл Excel (.xlsx). Ничего не "
+    "отправлено."
+)
+TEXT_BROADCAST_LIST_NOBODY = (
+    "В таблице не нашлось никого из записавшихся, кому можно написать. В "
+    "первом столбце должны стоять ники в Телеграме или номера (id), как в "
+    "registry.xlsx. Ничего не отправлено."
+)
+TEXT_BROADCAST_LIST_NO_TEXT = (
+    "Напишите после слова «список» текст рассылки. Ничего не отправлено."
+)
+# Ответ обычным /broadcast (без «список») на таблицу
+TEXT_BROADCAST_LIST_HINT = (
+    "Таблицы бот не рассылает. Если нужно написать людям из неё — ответьте на "
+    "неё так:\n<code>/broadcast список Привет! …</code>\nНичего не отправлено."
 )
 
 # Ответ командой на фото из альбома, а остальных фото этого альбома бот не
@@ -1145,6 +1205,13 @@ TEXT_ADMIN_HELP = (
     "кто записан на несколько, получит одно сообщение.\n"
     "<i>Пример:</i> /broadcast ДД.ММ.ГГГГ все Спасибо, что были с нами!\n"
     "Ссылки на зум так не шлите — у каждого сеанса она своя.\n\n"
+
+    "<b>/broadcast список текст</b> — ответом (reply) на таблицу Excel (.xlsx), "
+    "выложенную сюда: разослать только тем, кто в ней есть. В первом столбце — "
+    "ники в Телеграме (с @ или без) или номера (id), по одному в строке, — "
+    "например, копия registry.xlsx, где оставлены нужные строки (на обоих "
+    "листах). Бот покажет, сколько нашлось и кого не нашёл: найти он может "
+    "только тех, кто записывался.\n\n"
 
     "<b>Кнопки и форматирование.</b> Жирный, курсив и ссылку внутри слова "
     "делайте прямо в поле ввода, как обычно, — бот их сохранит.\n"
@@ -2626,6 +2693,121 @@ def file_media(message, bot_id):
     if not name.endswith(tuple(t.lower() for t in BROADCAST_FILE_TYPES)):
         return None
     return "document", doc.file_id
+
+
+# Ник в Телеграме: латиница, цифры и «_», начинается с буквы
+_LIST_HANDLE = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,31}")
+_LIST_LINK = re.compile(r"^(https?://)?(t|telegram)\.me/", re.IGNORECASE)
+
+
+def table_entries(data: bytes):
+    """Первый столбец таблицы-списка: [(лист, строка, значение)] и {лист: строк}.
+
+    Читаются все листы; пустые клетки пропускаются. Число, которое Excel хранит
+    как 123.0, становится «123».
+    """
+    workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    entries, per_sheet = [], {}
+    for sheet in workbook.worksheets:
+        for n, row in enumerate(sheet.iter_rows(values_only=True), 1):
+            cell = row[0] if row else None
+            if isinstance(cell, float) and cell.is_integer():
+                cell = int(cell)
+            value = "" if cell is None else str(cell).strip()
+            if value:
+                entries.append((sheet.title, n, value))
+                per_sheet[sheet.title] = per_sheet.get(sheet.title, 0) + 1
+    return entries, per_sheet
+
+
+def resolve_table(entries):
+    """Кого из записавшихся называет таблица: (их id, что не нашлось).
+
+    В строке — номер (id) или ник (с @ или без, можно ссылкой t.me/…). Ищем
+    только среди записавшихся; ник, который у двоих, не угадываем. Первая
+    строка листа, не похожая ни на номер, ни на ник, — заголовок («id»,
+    «Ник»), её не считаем.
+    """
+    known = all_subscribers()
+    by_handle = {}
+    for uid, (_, username) in list(people.items()):
+        handle = (username or "").strip().lstrip("@").lower()
+        if handle and uid in known:
+            by_handle.setdefault(handle, set()).add(uid)
+    found, missing = set(), []
+    for _, n, value in entries:
+        handle = _LIST_LINK.sub("", value).lstrip("@").strip()
+        if handle.isdigit():
+            ids = {int(handle)} & known
+        elif _LIST_HANDLE.fullmatch(handle):
+            ids = by_handle.get(handle.lower(), set())
+        elif n == 1:
+            continue
+        else:
+            ids = set()
+        if len(ids) == 1:
+            found |= ids
+        elif value not in missing:
+            missing.append(value)
+    return found, missing
+
+
+def table_note(entries, per_sheet, found, missing, blocked) -> str:
+    """Строки под вопросом «Отправить?»: сколько в файле, кого не нашли."""
+    note = TEXT_BROADCAST_LIST_FOUND.format(rows=len(entries), found=len(found))
+    if len(per_sheet) > 1:
+        note += TEXT_BROADCAST_LIST_SHEETS.format(sheets=", ".join(
+            f"«{name}» — {rows}" for name, rows in per_sheet.items()))
+    if missing:
+        shown = ", ".join(missing[:15])
+        if len(missing) > 15:
+            shown += f" … (+{len(missing) - 15})"
+        note += TEXT_BROADCAST_LIST_MISSING.format(count=len(missing), who=shown)
+    if blocked:
+        note += TEXT_BROADCAST_LIST_BLOCKED.format(count=blocked)
+    return note
+
+
+def list_from_reply(update, context):
+    """Таблица, на которую ответили «/broadcast список»: (id, note, имя файла).
+
+    None — если что-то не так; тогда человеку уже ответили, и ничего не уходит.
+    Файл самого бота (registry.xlsx) не годится: в нём все.
+    """
+    replied = update.message.reply_to_message
+    document = replied.document if replied else None
+
+    def refuse(text):
+        update.message.reply_text(text, parse_mode='HTML',
+                                  disable_web_page_preview=True)
+        return None
+
+    if document is None:
+        return refuse(TEXT_BROADCAST_LIST_NO_FILE)
+    if sent_by_us(replied, context.bot.id):
+        return refuse(TEXT_BROADCAST_LIST_FROM_BOT)
+    name = document.file_name or ""
+    if not name.lower().endswith(".xlsx"):
+        return refuse(TEXT_BROADCAST_LIST_UNREADABLE)
+    try:
+        data = download_registry(context.bot, document.file_id)
+        if data[:2] != b"PK":
+            raise ValueError("не xlsx")
+        entries, per_sheet = table_entries(data)
+    except Exception as e:   # что угодно не так с файлом — отказ, рассылки нет
+        logger.warning("Не удалось прочитать таблицу %s: %s", name, e)
+        return refuse(TEXT_BROADCAST_LIST_UNREADABLE)
+    found, missing = resolve_table(entries)
+    sendable = reachable(found)
+    if not sendable:
+        return refuse(TEXT_BROADCAST_LIST_NOBODY)
+    note = table_note(entries, per_sheet, found, missing,
+                      len(found) - len(sendable))
+    # Имя файла попадёт в счёт опроса в закрепе и в сообщения группы — без
+    # знаков, которые там что-то значат
+    label = TEXT_BROADCAST_LIST_LABEL.format(
+        name=re.sub(r"[<>&:\n]", "", name)[:60])
+    return frozenset(found), note, label
 
 
 def replied_media(message, bot_id=None):
@@ -4737,6 +4919,22 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
     # только тем, кто записан именно на этот вебинар.
     date_str, time_str, rest = split_target(next_word(update.message.text)[1])
 
+    # «список» сразу после команды — только тем, кто в таблице, на которую
+    # ответили. Без таблицы — отказ, а не рассылка всем: это слово значит «не
+    # всем», и ошибка не должна расширять круг.
+    table = None
+    if not date_str:
+        word, tail = next_word(rest)
+        if word.casefold().rstrip(":,.!") == TEXT_BROADCAST_LIST_WORD:
+            table = list_from_reply(update, context)
+            if table is None:
+                return
+            if not tail.strip():
+                update.message.reply_text(TEXT_BROADCAST_LIST_NO_TEXT,
+                                          disable_web_page_preview=True)
+                return
+            rest = tail
+
     # «все» сразу после даты (без времени) — всем сеансам этого дня. Только
     # явно: без этого слова день с несколькими сеансами по-прежнему
     # отклоняется, чтобы ссылка на зум не ушла не тем.
@@ -4749,15 +4947,22 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
     # Ответ на картинку, кружок, файл из разрешённых и т.п. — разослать и их
     # (текст не обязателен). Ответ на стикер, опрос или не тот файл — отказ:
     # иначе ушёл бы один текст, без того, на что ответили.
+    # (С «список» ответ — это таблица с людьми, её саму не рассылаем.)
     replied = update.message.reply_to_message
-    media = replied_media(replied, context.bot.id)
-    if replied and not media and (replied.effective_attachment
-                                  or replied.poll or replied.dice):
+    media = None if table else replied_media(replied, context.bot.id)
+    if (not table and replied and not media
+            and (replied.effective_attachment or replied.poll or replied.dice)):
+        if replied.document and sent_by_us(replied, context.bot.id):
+            reply = TEXT_BROADCAST_FILE_FROM_BOT
+        elif replied.document and (replied.document.file_name or ""
+                                   ).lower().endswith(".xlsx"):
+            reply = TEXT_BROADCAST_LIST_HINT
+        else:
+            reply = TEXT_BROADCAST_UNSUPPORTED
+        # Подсказка про таблицу — с разметкой, прежние отказы — как были
         update.message.reply_text(
-            TEXT_BROADCAST_FILE_FROM_BOT
-            if replied.document and sent_by_us(replied, context.bot.id)
-            else TEXT_BROADCAST_UNSUPPORTED,
-            disable_web_page_preview=True)
+            reply, disable_web_page_preview=True,
+            parse_mode='HTML' if reply is TEXT_BROADCAST_LIST_HINT else None)
         return
     # Несколько файлов одним сообщением Телеграм тоже склеивает в «альбом», а
     # бот собирает альбомы только из фото и видео — не врём, что что-то потеряли
@@ -4783,14 +4988,19 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
     # «30.9.2026 текст» датой не распознаётся — без этой проверки рассылка
     # ушла бы всем, вместе со ссылкой, которая нужна одному вебинару.
     first_word = next_word(rest)[0]
-    if not date_str and _DATE_LIKE.match(first_word):
+    if not table and not date_str and _DATE_LIKE.match(first_word):
         update.message.reply_text(
             TEXT_BROADCAST_BAD_DATE.format(token=html.escape(first_word)),
             parse_mode='HTML',
             disable_web_page_preview=True)
         return
 
-    if date_str:
+    note = ""
+    if table:
+        ids, note, label = table               # нашли уже, при разборе таблицы
+        keys = None
+        recipients = reachable(ids)
+    elif date_str:
         if time_str:
             key = f"{date_str}-{re.sub(r'[^0-9]', '', time_str)}"
             if not find_webinar(key) and key not in registrations:
@@ -4875,7 +5085,8 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
 
     # Ничего не шлём сразу: сначала показываем, что уйдёт, и спрашиваем
     preview_broadcast(update, context, body, media, keys, label,
-                      len(recipients), buttons, poll_id)
+                      len(recipients), buttons, poll_id,
+                      ids=table[0] if table else None, note=note)
 
 
 # Рассылки, которые показали, но ещё не отправили: id -> что и кому.
@@ -4885,7 +5096,8 @@ _pending_broadcast = {}
 
 
 def preview_broadcast(update, context, text, media, keys, label,
-                      count, buttons=None, poll_id=None) -> None:
+                      count, buttons=None, poll_id=None, ids=None,
+                      note="") -> None:
     """Выкладывает в группу ровно то, что уйдёт людям, и кнопки «Отправить/Отмена».
 
     Шлёт так же, как broadcast() — те же send_media() и caption_for(). Это и
@@ -4913,13 +5125,13 @@ def preview_broadcast(update, context, text, media, keys, label,
     pid = secrets.token_hex(4)
     _pending_broadcast[pid] = {"text": text, "media": media, "keys": keys,
                                "label": label, "buttons": buttons,
-                               "poll_id": poll_id}
+                               "poll_id": poll_id, "ids": ids}
     keyboard = [[
         InlineKeyboardButton(TEXT_BROADCAST_BTN_YES, callback_data=f"bc:y:{pid}"),
         InlineKeyboardButton(TEXT_BROADCAST_BTN_NO, callback_data=f"bc:n:{pid}"),
     ]]
     update.message.reply_text(
-        TEXT_BROADCAST_CONFIRM.format(label=label, count=count),
+        TEXT_BROADCAST_CONFIRM.format(label=label, count=count, note=note),
         reply_markup=InlineKeyboardMarkup(keyboard),
         disable_web_page_preview=True)
 
@@ -4954,8 +5166,11 @@ def broadcast_callback(update: Update, context: CallbackContext) -> None:
     if action != "y":
         _edit_question(query, TEXT_BROADCAST_CANCELLED)
         return
-    # Кому — считаем заново: пока думали, кто-то мог записаться
-    if job["keys"] is None:
+    # Кому — считаем заново: пока думали, кто-то мог записаться или
+    # заблокировать бота. По списку — те же люди, кто был в таблице.
+    if job.get("ids") is not None:
+        recipients = reachable(job["ids"])
+    elif job["keys"] is None:
         recipients = reachable(all_subscribers())
     else:
         recipients = set()
