@@ -287,8 +287,8 @@ TEXT_START = (
     "/my — мои вебинары: ссылки и отмена записи\n"
     "/questions — задать вопрос спикеру\n"
     "/courses — все курсы и вебинары\n"
-    "/kurs — курс «Полезные привычки 2.0»\n"
     "/dnevnik — дневник питания\n"
+    "/resurs — курс «Ресурс. Сон, энергия»\n"
     "/help — помощь"
 )
 
@@ -363,6 +363,13 @@ TEXT_COURSES_OTHER = "<b>Ещё у нас есть</b>"
 TEXT_INFO_GONE = (
     "Этого раздела больше нет. Загляните в меню бота — там всё, что есть "
     "сейчас."
+)
+
+# Человек прислал в личке команду, которой у бота нет: опечатка или старая
+# команда из прежних сообщений (например, /kurs — этот раздел убрали из меню).
+TEXT_UNKNOWN_COMMAND = (
+    "Такой команды у бота нет — возможно, этот раздел уже убрали. Нажмите "
+    "<b>Меню</b> слева от поля ввода: там всё, что есть сейчас."
 )
 
 # --- /my: мои записи — ссылка на вход и отмена записи ----------------------
@@ -526,6 +533,8 @@ KEY_MOVES = {
 # ============================================================================
 
 # --- Курс «Полезные привычки 2.0» -------------------------------------------
+# Сейчас его НЕТ в меню (убран 04.11: курс уже идёт). Текст оставлен, чтобы
+# вернуть кнопку одной строчкой — образец в списке INFO_PAGES ниже.
 TEXT_COURSE = (
     "<b>«Полезные привычки 2.0» с Екатериной Черепановой</b> — это не диета "
     "и не марафон запретов. За курс "
@@ -614,10 +623,10 @@ BUTTONS_DIARY = [
 # --- Курс Ирины Галеевой «Ресурс» — лист ожидания ----------------------------
 # Кнопка в меню — это запись в лист ожидания: человек получает этот текст, а в
 # рабочую группу приходит сообщение, кто записался ("waitlist" в INFO_PAGES).
-# Даты здесь словами, и сами они не устареют: после 21 октября уберите или
-# поправьте строки про скидку и бонус «до этой даты» (🎁 вверху и два пункта в
-# «Стоимость и условия»), после 6 ноября поправьте «с 6 ноября» в названии
-# кнопки (INFO_PAGES).
+# Даты здесь словами, и сами они не устареют: в тексте ещё стоят «Старт
+# курса: 6 ноября» и скидка с бонусом «до 21 октября» (два пункта в
+# «Стоимость и условия») — поправьте или уберите их, когда решите. Из названия
+# кнопки дату убрали 04.11.
 # Абзацы разделены пустой строкой (\n\n), жирный — <b>…</b>; эмодзи вписаны
 # прямо в текст.
 TEXT_RESURS = (
@@ -658,14 +667,17 @@ BUTTONS_RESURS = []      # под этим текстом кнопок нет
 # "waitlist": True — раздел это лист ожидания: каждый, кто его открыл, один раз
 # приходит сообщением в рабочую группу (имя и @username), чтобы вам было, кому
 # писать. Без этого слова раздел просто отвечает текстом.
+# Порядок строчек = порядок кнопок (в меню бота, под /register и в /courses).
 INFO_PAGES = [
-    {"command": "kurs", "menu": "Курс «Полезные привычки 2.0»",
-     "text": lambda: TEXT_COURSE, "buttons": lambda: BUTTONS_COURSE},
     {"command": "dnevnik", "menu": "Дневник питания",
      "text": lambda: TEXT_DIARY, "buttons": lambda: BUTTONS_DIARY},
-    {"command": "resurs", "menu": "Курс «Ресурс. Сон, энергия» с 6 ноября",
+    {"command": "resurs", "menu": "Курс «Ресурс. Сон, энергия»",
      "text": lambda: TEXT_RESURS, "buttons": lambda: BUTTONS_RESURS,
      "waitlist": True},
+    # Курс «Полезные привычки 2.0» убран из меню 04.11. Чтобы вернуть его,
+    # сотрите «# » в начале двух строчек ниже — кнопка встанет последней:
+    # {"command": "kurs", "menu": "Курс «Полезные привычки 2.0»",
+    #  "text": lambda: TEXT_COURSE, "buttons": lambda: BUTTONS_COURSE},
 ]
 
 # Человек просто написал боту. Главное — сказать прямо, что так сообщение
@@ -4253,7 +4265,7 @@ def send_info_page(message, page, user=None) -> None:
 
 
 def info_page_handler(page):
-    """Команда раздела: /kurs, /dnevnik и те, что добавят потом."""
+    """Команда раздела: /dnevnik, /resurs и те, что добавят потом."""
     def handler(update: Update, context: CallbackContext) -> None:
         if update.effective_chat.type != "private" and not is_admin_chat(update):
             return
@@ -4304,6 +4316,18 @@ def info_callback(update: Update, context: CallbackContext) -> None:
         return
     seen_alive(query.from_user.id)
     send_info_page(message, page, query.from_user)
+
+
+def unknown_command(update: Update, context: CallbackContext) -> None:
+    """Команда, которую не взял ни один обработчик, — только в личке.
+
+    Раньше на неё не было ответа вовсе, а /kurs стоит в старом приветствии у
+    каждого, кто нажимал «Старт»: после того как раздел убрали, нажатие на
+    него молчало бы. В группе по-прежнему тишина: там пишут и не боту.
+    """
+    seen_alive(update.effective_user.id)
+    update.message.reply_text(TEXT_UNKNOWN_COMMAND, parse_mode='HTML',
+                              disable_web_page_preview=True)
 
 
 def handle_message(update: Update, context: CallbackContext) -> None:
@@ -5333,6 +5357,11 @@ def main() -> None:
         CallbackQueryHandler(broadcast_callback, pattern=r'^(bc|vn):'))
     dispatcher.add_handler(
         MessageHandler(Filters.text & ~Filters.command, handle_message)
+    )
+    # Последним из команд: сюда попадает только то, что не взял никто выше
+    dispatcher.add_handler(
+        MessageHandler(Filters.command & Filters.chat_type.private,
+                       unknown_command)
     )
     # Фото и видео из альбомов, выложенных в группу, — для /broadcast
     dispatcher.add_handler(
