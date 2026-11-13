@@ -215,6 +215,17 @@ MINUTES_BEFORE_START = 75
 # кнопку всегда. Пустой список [] — кнопки только в «перед началом» и в /my.
 LINK_BUTTON_DAYS = [1]
 
+# Кружок (или картинка, голосовое, видео) к напоминанию «за N дней»: уходит
+# каждому ПЕРЕД текстом напоминания, текст — следующим сообщением (у кружка
+# подписи не бывает). Формат: {5: ("video_note", "код файла")} — число из
+# REMINDER_DAYS, вид и код. Вид: "video_note" — кружок, "photo" — картинка,
+# "voice" — голосовое, "video" — видео, "animation" — GIF. Код файла (file_id)
+# бот может взять только сам — попросите Сергея. Пустой {} — напоминания без
+# медиа. Если медиа до человека не дойдёт (например, он запретил кружки), текст
+# всё равно уйдёт. После вебинара уберите строчку — иначе тот же кружок уйдёт и
+# в напоминание следующего.
+REMINDER_MEDIA = {}
+
 # Сколько минут после начала вебинара на него ещё можно записаться и взять
 # ссылку: чтобы тот, кто добежал в последний момент, не остался ни с чем.
 # Когда вебинар закончился, ссылка уже не нужна, поэтому «на сутки» ставить не
@@ -740,16 +751,21 @@ TEXT_REMINDERS = {
     # 19:00 по Москве) по образцу текстов Полины к 19.10 — до её новых версий.
 
     # За 5 дней до вебинара. Один текст на оба сеанса: ни {time}, ни {title}.
+    # 13.11: текст Полины; перед ним уходит кружок Ольги (REMINDER_MEDIA).
+    # Цитата — <blockquote>…</blockquote>, Телеграм рисует её с полоской слева.
     5: (
-        "Привет! Напоминаем: <b>через 5 дней</b> вебинар\n\n"
-        "Ольга Крумкач: Гормоны и энергия или женское здоровье без мифов\n\n"
-        "Ждём вас! 🙂\n\n"
-        "Вебинар 19 ноября пройдёт в 11:00 или 19:00 по московскому времени. "
-        "Это будет один и тот же вебинар — два времени для вашего удобства. "
-        "Если вы хотите присоединиться в другое время — просто зарегистрируйтесь "
-        "ещё раз тут /register.\n\n"
-        "А ещё мы через бот собираем вопросы для Ольги, на которые она ответит на "
-        "вебинаре. Есть вопрос — жмите /questions и присылайте свой вопрос."
+        "<b>Вебинар 19 ноября проведет Ольга Крумкач</b>\n\n"
+        "Ольга — акушер-гинеколог, автор подкаста «Раздвиньте ноги» и книги «Все "
+        "о ней. Бережная гинекология от первой менструации до постменопаузы».\n\n"
+        "Она окончила Санкт-Петербургский государственный педиатрический "
+        "медицинский университет и продолжила образование в НМИЦ имени В. А. "
+        "Алмазова. Отдельно училась ведению менопаузы и постоянно следит за "
+        "новыми исследованиями.\n\n"
+        "<blockquote>«Я хочу помогать людям узнать себя и свое тело, разобраться "
+        "в том, что такое норма, а с чем лучше обратиться к врачу».</blockquote>\n\n"
+        "Принцип Ольги: понятно, научно и без страшилок. Именно так пройдёт и наш "
+        "вебинар «Женское здоровье без мифов».\n\n"
+        "До встречи 19 ноября!"
     ),
 
     # За 3 дня. Тоже один на оба сеанса; [Да] и [Нет] — кнопки опроса.
@@ -3519,6 +3535,29 @@ def send_reminders(bot, today: datetime.date = None) -> int:
         return _send_reminders(bot, today)
 
 
+def reminder_media(days_left: int):
+    """Медиа к напоминанию «за N дней» из REMINDER_MEDIA — (вид, file_id) или None.
+
+    Опечатка в настройке не должна остановить само напоминание: тогда оно
+    уходит без медиа, а в логе — почему.
+    """
+    entry = REMINDER_MEDIA.get(days_left)
+    if not entry:
+        return None
+    try:
+        kind, file_id = entry
+    except (TypeError, ValueError):
+        logger.error("REMINDER_MEDIA[%s] — не пара (вид, код): %r", days_left,
+                     entry)
+        return None
+    if kind not in MEDIA_KINDS or not isinstance(file_id, str) \
+            or not file_id.strip():
+        logger.error("REMINDER_MEDIA[%s]: вид %r или код не годятся — "
+                     "напоминание уйдёт без медиа", days_left, kind)
+        return None
+    return kind, file_id.strip()
+
+
 def reminder_poll(bot, w, text: str, days_left: int):
     """Строки-ответы [Да] / [Нет] в тексте напоминания — опрос, как в /broadcast.
 
@@ -3612,7 +3651,8 @@ def _send_reminders(bot, today: datetime.date = None) -> int:
             warn_no_zoom(bot, w, warned)
         due.append({"w": w, "key": key, "tag": tag, "days_left": days_left,
                     "recipients": recipients, "text": text,
-                    "buttons": buttons, "poll_id": poll_id})
+                    "buttons": buttons, "poll_id": poll_id,
+                    "media": reminder_media(days_left)})
 
     # Одно и то же сообщение — тот же текст, те же кнопки, тот же опрос — для
     # двух сеансов одного дня шлём один раз: записанному на оба второй такой же
@@ -3620,7 +3660,8 @@ def _send_reminders(bot, today: datetime.date = None) -> int:
     # кнопка со ссылкой, сообщения у сеансов разные и уходят каждое отдельно.
     groups = {}
     for item in due:
-        signature = (item["text"], tuple(item["buttons"] or ()), item["poll_id"])
+        signature = (item["text"], tuple(item["buttons"] or ()), item["poll_id"],
+                     item["media"])
         groups.setdefault(signature, []).append(item)
 
     for items in groups.values():
@@ -3630,6 +3671,7 @@ def _send_reminders(bot, today: datetime.date = None) -> int:
         buttons = (first["buttons"] or []) + reminder_calendar_buttons(items)
         sent, failed, markup_error = broadcast(bot, first["text"], recipients,
                                                markup_fallback=True,
+                                               media=first["media"],
                                                buttons=buttons or None,
                                                poll_id=first["poll_id"])
         if markup_error and "markup" not in warned:
