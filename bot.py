@@ -826,6 +826,32 @@ TEXT_REMINDERS = {
     ),
 }
 
+# Свой текст напоминания для ОДНОГО сеанса — вместо общего из TEXT_REMINDERS.
+# Слева — дата и время сеанса, как в расписании: "ДД.ММ.ГГГГ ЧЧ:ММ". Справа —
+# {за сколько дней: текст}, дни те же, что в TEXT_REMINDERS. В остальные дни
+# этот сеанс получает общие тексты. Под таким напоминанием НЕТ кнопки
+# «ИДУ НА ВЕБИНАР» (она для сеанса, у которого ссылка уже есть) — напишите в
+# самом тексте, когда придёт ссылка; вместо неё — кнопка «📅 В календарь».
+# Запись про прошедший сеанс ни на что не влияет, удалять её не обязательно.
+# Пустой {} — у всех сеансов общие тексты.
+# 17.11: вечерний сеанс 19.11 — автовебинар, ссылка на него появится только
+# 19.11, поэтому накануне вечерним уходит текст Полины без кнопки.
+REMINDER_SESSION_TEXTS = {
+    "19.11.2026 19:00": {
+        1: (
+            "⚡ Уже завтра вебинар с гинекологом Ольгой Крумкач\n\n"
+            "На вебинаре: из чего складывается женское самочувствие, когда тебе "
+            "35+, какие гормоны стоит сдавать и каким популярным мифам о "
+            "здоровье пора перестать верить.\n\n"
+            "🎁 Ответы на ваши вопросы и подарок в конце!\n\n"
+            "🗓 19 ноября\n"
+            "11:00 и 19:00 по Москве\n"
+            "Участие бесплатное!\n\n"
+            "Ссылку бот вам пришлет перед вебинаром! ✨"
+        ),
+    },
+}
+
 # Примерно за час до начала. Тоже с кнопкой со ссылкой.
 TEXT_REMINDER_SOON = (
     "Привет! Вебинар начинается <b>уже совсем скоро</b>, в {time} по московскому "
@@ -3170,15 +3196,18 @@ def link_button(w):
 
 def reminder_calendar_buttons(items):
     """Кнопки «📅 В календарь» под напоминанием, у которого нет кнопки со ссылкой
-    (за 5, 3 и 2 дня). У «за день» и «скоро» календаря нет: там кнопка со
-    ссылкой, а календарь со ссылкой приходит уже под самой ссылкой.
+    (за 5, 3 и 2 дня — и «за день» со своим текстом сеанса из
+    REMINDER_SESSION_TEXTS). Где кнопка со ссылкой («за день», «скоро»),
+    календаря нет: календарь со ссылкой приходит уже под самой ссылкой.
 
     items — сеансы одной рассылки. Сеансы с одним и тем же сообщением идут одной
     рассылкой, поэтому кнопки у неё общие: по одной на каждый сеанс, с датой и
     временем на надписи; сеанс один — одна кнопка с общей надписью. Так
     записанный на оба сеанса по-прежнему получает одно сообщение.
     """
-    if not CALENDAR_ENABLED or items[0]["days_left"] in LINK_BUTTON_DAYS:
+    first = items[0]
+    if not CALENDAR_ENABLED or first.get(
+            "link", first["days_left"] in LINK_BUTTON_DAYS):
         return []
     ws = [item["w"] for item in items if calendar_times(item["w"])]
     pairs = []
@@ -3554,6 +3583,49 @@ def send_reminders(bot, today: datetime.date = None) -> int:
         return _send_reminders(bot, today)
 
 
+def session_reminder_key(session) -> str:
+    """Ключ сеанса из записи REMINDER_SESSION_TEXTS ("19.11.2026 19:00") — тот
+    же, что webinar_key(), или None, если запись не похожа на дату и время."""
+    parts = str(session).split()
+    if len(parts) != 2:
+        return None
+    return webinar_key({"date": parts[0], "time": parts[1]})
+
+
+def session_reminder_text(w, days_left):
+    """Свой текст напоминания для сеанса w из REMINDER_SESSION_TEXTS — или None.
+
+    Опечатка в настройке не должна остановить напоминание: тогда уходит общий
+    текст, а в логе — почему.
+    """
+    if days_left is None:
+        return None
+    key = webinar_key(w)
+    for session, texts in REMINDER_SESSION_TEXTS.items():
+        if session_reminder_key(session) != key:
+            continue
+        if not isinstance(texts, dict):
+            logger.error("REMINDER_SESSION_TEXTS[%r] — не {дни: текст}: "
+                         "уйдёт общий текст", session)
+            return None
+        text = texts.get(days_left)
+        if text is None:
+            return None
+        if not isinstance(text, str) or not text.strip():
+            logger.error("REMINDER_SESSION_TEXTS[%r][%s] пустой — уйдёт общий "
+                         "текст", session, days_left)
+            return None
+        return text
+    return None
+
+
+def unknown_session_texts():
+    """Записи REMINDER_SESSION_TEXTS, которым не соответствует ни один сеанс
+    в расписании: такие тексты не уйдут никому."""
+    keys = {webinar_key(w) for w in WEBINARS}
+    return [s for s in REMINDER_SESSION_TEXTS if session_reminder_key(s) not in keys]
+
+
 def reminder_media(days_left: int):
     """Медиа к напоминанию «за N дней» из REMINDER_MEDIA — (вид, file_id) или None.
 
@@ -3659,18 +3731,21 @@ def _send_reminders(bot, today: datetime.date = None) -> int:
                         key)
             continue
 
+        # Свой текст сеанса (REMINDER_SESSION_TEXTS) — без кнопки со ссылкой
+        own = session_reminder_text(w, days_left)
         text, note = reminder_text(w, when_phrase(days_left),
-                                   reminder_template(days_left))
+                                   own or reminder_template(days_left))
         if note and note not in warned:
             notify_group(bot, note)
             warned.add(note)
         text, buttons, poll_id = reminder_poll(bot, w, text, days_left)
-        if days_left in LINK_BUTTON_DAYS:
+        link = days_left in LINK_BUTTON_DAYS and own is None
+        if link:
             buttons = (buttons or []) + [link_button(w)]
             warn_no_zoom(bot, w, warned)
         due.append({"w": w, "key": key, "tag": tag, "days_left": days_left,
                     "recipients": recipients, "text": text,
-                    "buttons": buttons, "poll_id": poll_id,
+                    "buttons": buttons, "poll_id": poll_id, "link": link,
                     "media": reminder_media(days_left)})
 
     # Одно и то же сообщение — тот же текст, те же кнопки, тот же опрос — для
@@ -5443,6 +5518,10 @@ def main() -> None:
     if dupes:
         logger.error("Вебинары с одинаковой датой и временем: %s — их нельзя "
                      "различить, поменяйте время у одного из них", dupes)
+    orphans = unknown_session_texts()
+    if orphans:
+        logger.error("В REMINDER_SESSION_TEXTS сеансы, которых нет в расписании: "
+                     "%s — их тексты никому не уйдут", orphans)
 
     if load_registry(updater.bot):
         # На холодном старте приводим старые записи «по дате» в порядок:
