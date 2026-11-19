@@ -1043,6 +1043,13 @@ TEXT_BROADCAST_NO_WEBINAR = (
 TEXT_BROADCAST_EMPTY_ONE = "На {date} пока никто не записан — рассылать некому."
 
 TEXT_BROADCAST_EMPTY_ALL = "Пока никто не зарегистрирован — рассылать некому."
+# Бот только что проснулся и не смог прочитать список записавшихся (Телеграм
+# не ответил вовремя) — без списка он не знает, кому слать, и ничего не шлёт
+TEXT_REGISTRY_NOT_READ = (
+    "⚠️ Не получилось прочитать список записавшихся — бот только что проснулся, "
+    "а Телеграм не ответил вовремя. Ничего не отправлено. Повторите команду "
+    "через минуту."
+)
 
 TEXT_BROADCAST_DONE = "Готово. Доставлено: {sent}. Не доставлено: {failed}."
 
@@ -3127,6 +3134,17 @@ _reminder_lock = threading.Lock()
 _reported_blocked = False    # уже сказали группе, что список не прочитан
 
 
+def registry_read_now(bot) -> bool:
+    """Прочитан ли список — перед тем как считать, кому слать (/broadcast, /who).
+
+    19.11: бот проснулся, чтение списка сорвалось по таймауту, и /broadcast на
+    вечерний сеанс ответил «пока никто не записан» — память была пуста. Теперь
+    перечитываем, а не вышло — говорим, что список не прочитан.
+    """
+    with _save_lock:          # чтобы чтение не разминулось с сохранением
+        return registry_loaded or load_registry(bot)
+
+
 def registry_ready(bot) -> bool:
     """Прочитан ли список — перед тем как решать, кому напоминать.
 
@@ -4896,6 +4914,10 @@ def who_command(update: Update, context: CallbackContext) -> None:
     на страницу, по именам можно нажимать."""
     if not is_admin_chat(update):
         return
+    if not registry_read_now(context.bot):
+        update.message.reply_text(TEXT_REGISTRY_NOT_READ,
+                                  disable_web_page_preview=True)
+        return
 
     w_date, w_time, extra = split_target(next_word(update.message.text)[1])
     page = 1
@@ -5083,6 +5105,12 @@ def broadcast_command(update: Update, context: CallbackContext) -> None:
     и вопрос.
     """
     if not is_admin_chat(update):
+        return
+    # Без прочитанного списка «кому» считать не из чего: пустая память
+    # выглядела бы как «никто не записан»
+    if not registry_read_now(context.bot):
+        update.message.reply_text(TEXT_REGISTRY_NOT_READ,
+                                  disable_web_page_preview=True)
         return
 
     # Первыми словами можно указать дату и время — тогда рассылка уйдёт
