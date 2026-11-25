@@ -409,10 +409,14 @@ TEXT_REGISTER_OUTSIDE = (
     "— узнаете, какие анализы нужны, а какие «на всякий случай» ничего не "
     "покажут;\n"
     "— разберётесь с мифами о гормональной терапии и придёте к врачу с "
-    "планом.\n\n"
-    "Выбрать дату вебинару и зарегистрироваться: "
-    "https://peri.tillo.life/?utm_source=bot_tg"
+    "планом."
 )
+# Кнопки под этим текстом: («надпись», «ссылка»), каждая своей строкой. Под
+# ними — кнопки разделов меню (дневники, курс), как всегда в /register.
+BUTTONS_REGISTER_OUTSIDE = [
+    ("Выбрать дату вебинара и зарегистрироваться",
+     "https://peri.tillo.life/?utm_source=bot_tg"),
+]
 
 # Заголовки в списке /courses
 TEXT_COURSES_TITLE = "<b>Курсы и вебинары Tillo</b>"
@@ -4007,10 +4011,21 @@ def register(update: Update, context: CallbackContext) -> None:
     # пропадает ровно тогда, когда расписание пустое
     extra = info_buttons()
     if not upcoming:
-        # Запись на сайте (TEXT_REGISTER_OUTSIDE) — или «пока вебинаров нет»
+        # Запись на сайте (TEXT_REGISTER_OUTSIDE и её кнопка) — или «пока
+        # вебинаров нет». Опечатка в кнопке не должна сломать /register.
+        outside = TEXT_REGISTER_OUTSIDE.strip()
+        rows = []
+        if outside:
+            try:
+                markup = buttons_markup([(label, url) for label, url
+                                         in BUTTONS_REGISTER_OUTSIDE if url])
+                rows = list(markup.inline_keyboard) if markup else []
+            except (TypeError, ValueError):
+                logger.exception("BUTTONS_REGISTER_OUTSIDE не собрались")
+        rows += extra
         update.message.reply_text(
-            TEXT_REGISTER_OUTSIDE.strip() or TEXT_NO_WEBINARS, parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(extra) if extra else None,
+            outside or TEXT_NO_WEBINARS, parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(rows) if rows else None,
             disable_web_page_preview=True)
         return
 
