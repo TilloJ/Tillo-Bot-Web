@@ -393,13 +393,42 @@ TEXT_NO_WEBINARS = (
     "Пока новых вебинаров не запланировано. Загляните чуть позже!"
 )
 
-# Вебинар, на который записываются НЕ в боте, а по ссылке на сайте. Пока в
-# расписании WEBINARS нет ни одного предстоящего вебинара, «Регистрация на
-# вебинар» (/register) присылает этот текст (вместо «Пока новых вебинаров не
-# запланировано»). Добавите вебинар в расписание — /register снова покажет
-# кнопки записи в боте. Пустые кавычки "" — снова «Пока новых вебинаров…».
-# 25.11: текст Полины — «Женское здоровье для взрослых», Ольга Крумкач.
-TEXT_REGISTER_OUTSIDE = (
+# ----------------------------------------------------------------------------
+# ВЕБИНАРЫ, НА КОТОРЫЕ ЗАПИСЫВАЮТСЯ НА САЙТЕ, А НЕ В БОТЕ
+# Пока в расписании WEBINARS нет ни одного предстоящего вебинара,
+# «Регистрация на вебинар» (/register) показывает эти вебинары: если он один —
+# сразу его текст с кнопкой, если их несколько — «На какой вебинар…» и по
+# кнопке на каждый (надпись "button" — короткая, на телефоне видно ~30 знаков).
+# Нажал — приходит текст этого вебинара (TEXT_…) с его кнопками (BUTTONS_…).
+# Бот про такую запись ничего не знает: не напоминает и в /my её не видит.
+# Добавите вебинар в расписание WEBINARS — /register снова покажет кнопки
+# записи в боте. Пустой список SITE_WEBINARS = [] — «Пока новых вебинаров…».
+# Порядок строчек в SITE_WEBINARS = порядок кнопок. "key" — латиницей, без
+# пробелов, у каждого свой.
+# ----------------------------------------------------------------------------
+TEXT_SITE_PICK = "На какой вебинар хотите записаться?"
+
+# 25.11: вебинар Екатерины Черепановой — текст Полины
+TEXT_SITE_CHEREPANOVA = (
+    "✅ Вы записались на вебинар «5 ошибок, из-за которых здоровое питание не "
+    "становится образом жизни»\n\n"
+    "Ведёт нутрициолог Екатерина Черепанова, у неё 8 лет практики. Участие "
+    "бесплатное.\n\n"
+    "На вебинаре разберём:\n"
+    "🥦 почему мы снова и снова начинаем «с понедельника» и бросаем через "
+    "неделю;\n"
+    "🥦 какие ошибки мешают привычкам закрепиться, даже когда знаешь, как "
+    "правильно;\n"
+    "🥦 как питаться сбалансированно без запретов, срывов и чувства вины.\n\n"
+    "Без диет и марафонов — только то, что работает в обычной жизни."
+)
+BUTTONS_SITE_CHEREPANOVA = [
+    ("Выбрать дату вебинара и зарегистрироваться",
+     "https://tillo.life/courses/poleznye-privychki-2-0/?utm_source=bot_tg"),
+]
+
+# 25.11: вебинар Ольги Крумкач — текст Полины
+TEXT_SITE_KRUMKACH = (
     "✅ Вы записались на вебинар «Женское здоровье для взрослых»\n\n"
     "Полтора часа с акушером-гинекологом Ольгой Крумкач о том, что происходит "
     "с телом после 35 и что с этим делать.\n\n"
@@ -411,11 +440,18 @@ TEXT_REGISTER_OUTSIDE = (
     "— разберётесь с мифами о гормональной терапии и придёте к врачу с "
     "планом."
 )
-# Кнопки под этим текстом: («надпись», «ссылка»), каждая своей строкой. Под
-# ними — кнопки разделов меню (дневники, курс), как всегда в /register.
-BUTTONS_REGISTER_OUTSIDE = [
+BUTTONS_SITE_KRUMKACH = [
     ("Выбрать дату вебинара и зарегистрироваться",
      "https://peri.tillo.life/?utm_source=bot_tg"),
+]
+
+SITE_WEBINARS = [
+    {"key": "cherepanova", "button": "5 ошибок питания — Черепанова",
+     "text": lambda: TEXT_SITE_CHEREPANOVA,
+     "buttons": lambda: BUTTONS_SITE_CHEREPANOVA},
+    {"key": "krumkach", "button": "Женское здоровье 35+ — Крумкач",
+     "text": lambda: TEXT_SITE_KRUMKACH,
+     "buttons": lambda: BUTTONS_SITE_KRUMKACH},
 ]
 
 # Заголовки в списке /courses
@@ -4011,20 +4047,19 @@ def register(update: Update, context: CallbackContext) -> None:
     # пропадает ровно тогда, когда расписание пустое
     extra = info_buttons()
     if not upcoming:
-        # Запись на сайте (TEXT_REGISTER_OUTSIDE и её кнопка) — или «пока
-        # вебинаров нет». Опечатка в кнопке не должна сломать /register.
-        outside = TEXT_REGISTER_OUTSIDE.strip()
-        rows = []
-        if outside:
-            try:
-                markup = buttons_markup([(label, url) for label, url
-                                         in BUTTONS_REGISTER_OUTSIDE if url])
-                rows = list(markup.inline_keyboard) if markup else []
-            except (TypeError, ValueError):
-                logger.exception("BUTTONS_REGISTER_OUTSIDE не собрались")
+        # Вебинары с записью на сайте (SITE_WEBINARS) — или «пока вебинаров нет»
+        sites = [w for w in SITE_WEBINARS if site_webinar_text(w)]
+        if len(sites) == 1:
+            text, rows = site_webinar_text(sites[0]), site_webinar_rows(sites[0])
+        elif sites:
+            text = TEXT_SITE_PICK
+            rows = [[InlineKeyboardButton(w["button"], callback_data=f"sw:{w['key']}")]
+                    for w in sites]
+        else:
+            text, rows = TEXT_NO_WEBINARS, []
         rows += extra
         update.message.reply_text(
-            outside or TEXT_NO_WEBINARS, parse_mode='HTML',
+            text, parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup(rows) if rows else None,
             disable_web_page_preview=True)
         return
@@ -4528,6 +4563,54 @@ def ask_callback(update: Update, context: CallbackContext) -> None:
                                  disable_web_page_preview=True)
     except TelegramError as e:
         logger.warning("Не удалось ответить на кнопку вопроса: %s", e)
+
+
+def site_webinar_text(w) -> str:
+    """Текст вебинара с записью на сайте ("" — если его нет или он сломан)."""
+    try:
+        text = w["text"]()
+        return text.strip() if isinstance(text, str) else ""
+    except Exception:
+        logger.exception("Текст вебинара %r из SITE_WEBINARS не собрался",
+                         w.get("key") if isinstance(w, dict) else w)
+        return ""
+
+
+def site_webinar_rows(w) -> list:
+    """Кнопки вебинара с записью на сайте. Опечатка в них роняет только их."""
+    try:
+        markup = buttons_markup([(label, url) for label, url in w["buttons"]()
+                                 if url])
+        return list(markup.inline_keyboard) if markup else []
+    except Exception:
+        logger.exception("Кнопки вебинара %r из SITE_WEBINARS не собрались",
+                         w.get("key") if isinstance(w, dict) else w)
+        return []
+
+
+def site_callback(update: Update, context: CallbackContext) -> None:
+    """Нажатие на вебинар с записью на сайте («sw:<key>») под /register."""
+    query = update.callback_query
+    answer_tap(query)
+    message = query.message
+    if message is None or (message.chat.type != "private"
+                           and not (ADMIN_CHAT_ID
+                                    and message.chat.id == ADMIN_CHAT_ID)):
+        return
+    key = (query.data or "").split(":", 1)[-1]
+    w = next((w for w in SITE_WEBINARS if w.get("key") == key), None)
+    text = site_webinar_text(w) if w else ""
+    rows = site_webinar_rows(w) if text else []
+    if query.from_user:
+        seen_alive(query.from_user.id)
+    # Новым сообщением, а не правкой: под списком остаются кнопки остальных
+    try:
+        message.reply_text(
+            text or TEXT_INFO_GONE, parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(rows) if rows else None,
+            disable_web_page_preview=True)
+    except TelegramError as e:
+        logger.warning("Не удалось ответить на кнопку вебинара: %s", e)
 
 
 def info_callback(update: Update, context: CallbackContext) -> None:
@@ -5582,6 +5665,7 @@ def main() -> None:
     dispatcher.add_handler(CallbackQueryHandler(link_callback, pattern=r'^lk:'))
     dispatcher.add_handler(CallbackQueryHandler(calendar_callback, pattern=r'^cal:'))
     dispatcher.add_handler(CallbackQueryHandler(info_callback, pattern=r'^info:'))
+    dispatcher.add_handler(CallbackQueryHandler(site_callback, pattern=r'^sw:'))
     dispatcher.add_handler(CallbackQueryHandler(ask_callback, pattern=r'^ask:'))
     dispatcher.add_handler(
         CallbackQueryHandler(cancel_callback, pattern=r'^c[xyn]:'))
